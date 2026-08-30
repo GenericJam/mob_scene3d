@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "mob_scene3d",
+  "project_id": "326fdcc7-2eb8-4e34-8527-f65d542ccb31"
+}
