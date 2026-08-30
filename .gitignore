@@ -1,3 +1,16 @@
+# Mix build artifacts
+/_build/
+/cover/
+/deps/
+/doc/
+erl_crash.dump
+*.ez
+mob_scene3d-*.tar
+/tmp/
+
+# Local config — never committed (AGENTS.md)
+mob.exs
+.envrc
 
 # Beads / Dolt files (added by bd init)
 .dolt/
