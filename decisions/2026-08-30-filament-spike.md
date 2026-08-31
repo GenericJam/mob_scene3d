@@ -1,6 +1,12 @@
 # 2026-08-30 — Filament embedding spike (bead mob_scene3d-b9g)
 
-**Verdict: TBD**
+**Verdict: feasible-with-caveats.** Filament renders the same .glb,
+visibly identical, inside a Mob-hosted native view on both platforms; the
+link step is unremarkable on Android (Maven AARs) and ~40 lines of
+build.zig on iOS. The two caveats that matter for the plugin plan:
+(1) there is no plugin-manifest mechanism yet for shipping the iOS
+prebuilt static libs (landmine 6); (2) shadows are broken under
+Metal-on-simulator and must be feature-gated there (landmine 7).
 
 Spike app: `s3d_spike/` on this branch (generated with released mob_new
 0.4.28, `--local` against mob 0.7.37 / mob_dev 0.6.x checkouts). One added
@@ -55,9 +61,15 @@ published to Maven Central**, not the newest GitHub release.
 
 | Platform | Before | After | Delta |
 |---|---|---|---|
-| Android debug APK (arm64-v8a + armeabi-v7a + x86_64) | 77,553,781 B | TBD | TBD |
-| iOS sim binary (arm64) | 7,982,664 B | TBD | TBD |
-| iOS .app bundle | 8.3 MB | TBD | TBD |
+| Android debug APK (arm64-v8a + armeabi-v7a + x86_64) | 77,553,781 B | 89,215,317 B | **+11,661,536 B (+11.1 MiB)** |
+| iOS sim binary (arm64, -dead_strip) | 7,982,664 B | 11,342,024 B | **+3,359,360 B (+3.2 MiB)** |
+| iOS .app bundle | 8,464 KiB | 11,748 KiB | +3,284 KiB |
+
+The Android delta covers three ABIs (≈7.4 MB uncompressed native per
+arm64, APK-compressed). An AAB/per-ABI split would deliver roughly a
+third of that to a given device. The iOS static-lib + dead_strip path is
+markedly cheaper than the AAR path — 3.2 MB for
+filament+backend+gltfio+ktxreader+basis+draco+uberarchive.
 
 Android AAR native payload for reference (uncompressed, per-ABI arm64):
 libfilament-jni 3.15 MB + libgltfio-jni 2.84 MB + libfilament-utils-jni
@@ -71,8 +83,14 @@ All three AARs' arm64 `.so`s have 16 KB-aligned PT_LOAD segments
 
 | Platform | Baseline `mob.deploy --native` | With Filament | Delta |
 |---|---|---|---|
-| Android (emulator, debug) | 3m14.6s | TBD | TBD |
-| iOS sim | 3m29.6s | TBD | TBD |
+| Android (emulator, debug) | 3m14.6s (gradle portion 21s) | 2m28.2s (gradle portion 58s, incl. first AAR fetch) | gradle +37s first build; steady-state delta ≈ +10–20s (dex/merge of 3 AARs) |
+| iOS sim | 3m29.6s (cold-ish first deploy) | 2m43.5s / 2m46.2s (warm zig cache) | added .mm compile ≈1s; the bigger static link adds single-digit seconds |
+
+Caveat: `mob.deploy --native` times are dominated by OTP sync/BEAM push
+and zig/gradle caching, so these are not clean-room A/B numbers; the
+honest summary is **Filament adds negligible build time on iOS and tens
+of seconds of Gradle work on Android** — the link step is not a
+build-time hazard on either platform.
 
 ### Integration landmines
 
@@ -102,19 +120,38 @@ All three AARs' arm64 `.so`s have 16 KB-aligned PT_LOAD segments
      `-Xcc -I<mob_dir>/ios`) plus the spike view's ObjC interface.
 4. **zstd double-link**: the OTP runtime already links `libzstd.a`;
    Filament also ships one. Listing Filament's after OTP's makes it inert
-   (archive members load on demand) — no duplicate-symbol failures. TBD:
-   confirmed by successful link.
-5. **Gradle TLS + sandboxed agents**: Gradle's JVM does not trust the
-   Claude-sandbox MITM proxy cert; first Filament fetch needs an
-   unsandboxed build (or a pre-warmed `~/.gradle` cache). Not a mob issue,
-   an agent-workflow issue — noting because it *will* recur for other
-   agents adding the deps.
+   (archive members load on demand) — confirmed, the link succeeds with
+   both present and the app runs.
+5. **Gradle TLS behind Cloudflare WARP**: this machine's traffic is
+   MITM'd by a Cloudflare Gateway CA that curl/git/node trust via env
+   vars (`SSL_CERT_FILE` etc.) but the JVM does not — Gradle's first
+   fetch of the Filament POMs died with `PKIX path building failed`.
+   Fix: import `/Library/Application Support/Cloudflare/installed_cert.pem`
+   into a copy of the JDK cacerts and pass
+   `GRADLE_OPTS="-Djavax.net.ssl.trustStore=... -DtrustStorePassword=changeit"`.
+   Will recur for any new Maven dependency on this setup.
 6. **Plugin packaging gap (future, iOS)**: there is no plugin-manifest key
    for shipping prebuilt static libs (`ios.frameworks` is system-framework
    names only; `cpp_archive` compiles *sources*). The real mob_scene3d
    plugin will need either a new manifest capability (vendored prebuilt
    .a paths) or a host-side fetch step à la `scripts/fetch_filament_ios.sh`.
    This is the single biggest open item for productionizing.
+7. **Metal-on-simulator shadow pass blacks out the model.** With
+   `castShadows(true)` + default `setShadowingEnabled(true)`, the model
+   renders with a correct silhouette but a fully black surface on the iOS
+   simulator (Metal FL2): the shadow pass zeroes the direct-light term.
+   Disabling shadowing restores correct PBR shading. Android (GLES,
+   emulator) renders shadows fine with identical scene parameters. The
+   future applier should feature-gate shadows on `TARGET_OS_SIMULATOR`
+   (and re-verify on physical iOS hardware — deliberately out of scope
+   here).
+8. **Transform-composition trap with ModelViewer (Android)**:
+   `transformToUnitCube()` centers the model at (0,0,-4) — in front of
+   ModelViewer's origin-based camera — not at the origin. A per-frame
+   spin must compose `base * rotation` (rotate in model space), not
+   `rotation * base`, or the model orbits the camera and leaves the
+   frame. The C++ side (own camera, model centered at origin) does not
+   have this trap.
 
 ### Threading model observed
 
@@ -154,8 +191,40 @@ All three AARs' arm64 `.so`s have 16 KB-aligned PT_LOAD segments
 
 ## Evidence
 
-- `evidence/` — screenshots (+ motion evidence) from both platforms. TBD
-- Device verification: TBD
+All under `evidence/` on this branch. Verification followed the
+"effects, not exit codes" rule: after each deploy — process present
+(`pidof` / `launchctl list`), Erlang node connected from a host probe,
+`Mob.Test.screen/1` answering, `Mob.Test.tap(node, :open_scene3d)`
+navigating (screen module read back), then screenshots.
+
+- `android_emu_fixed_t{1,2}.png` — Android (redroid13 x86_64 emulator,
+  buildpool2): lit beveled cube on skybox, different rotation angles 1 s
+  apart (motion).
+- `android_emu_scene3d_t*.png` / `android_emu_screencap_t*.png` — the
+  pre-fix orbit bug captures (landmine 8), kept as the record; also
+  demonstrates that Mob's in-process `Mob.Test.screenshot/1` returns the
+  view-hierarchy without the SurfaceView contents (byte-identical PNGs
+  while the surface animated) — **3D evidence must come from compositor
+  captures** (`adb screencap` / `simctl io screenshot`), which matters
+  for the future Mob.Test integration bead.
+- `ios_sim_final_t{0,2}.png` — iOS pool sim (pool-ios-0, iPhone,
+  iOS 26 runtime): lit cube, two rotation angles.
+- `ios_sim_scene3d_t*.png` — the pre-fix all-black shadow captures
+  (landmine 7).
+- `ios_sim_spin.mp4` — 5 s screen recording of the spin (motion proof).
+- `android_moto_scene3d_t{0,1,2}.png` + `android_moto_spin.mp4` (5 s
+  screenrecord) — **physical acceptance** on the Moto g power 2021
+  (ZY22DP6HFL, leased via the clarity pool as `s3d-spike@build`,
+  released after): lit spinning cube, self-shadowing visible —
+  `castShadows(true)` works on real Android hardware, reinforcing that
+  landmine 7 is simulator-specific.
+- Same asset, same skybox color, same directional light on all three
+  targets; output visually identical modulo the iOS shadow gate.
+
+Deploy to the physical Moto (`mix mob.deploy --native --device
+ZY22DP6HFL`, warm caches): 2m10.8s. App uninstalled from the Moto, the
+pool emulator, and the pool sim after evidence capture; all three leases
+released.
 
 ## What the spike deliberately did not do
 
@@ -165,7 +234,8 @@ All three AARs' arm64 `.so`s have 16 KB-aligned PT_LOAD segments
 - No touch input, no picking, no lifecycle (background/resize) handling
   beyond view attach/detach.
 - No device (arm64) iOS build — pool sim only; `build_device.zig` needs
-  the same ~40-line treatment with the `ios-arm64` slices.
+  the same ~40-line treatment with the `ios-arm64` slices. Shadows on
+  physical iOS Metal therefore remain unverified (landmine 7).
 - In-app registration rather than a real plugin package (the tier-2
   scaffold from `mix mob.new_plugin --tier 2` was inspected and matches
   what the spike hand-wired; see landmine 6 for the gap).

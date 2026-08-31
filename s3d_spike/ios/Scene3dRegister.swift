@@ -23,14 +23,14 @@ public func s3dRegisterScene3d() {
         guard let assetPath = props["asset_path"] as? String else {
             return AnyView(EmptyView())
         }
-        let w = (props["width"] as? NSNumber)?.doubleValue ?? 340
-        let h = (props["height"] as? NSNumber)?.doubleValue ?? 420
+        let width = (props["width"] as? NSNumber)?.doubleValue ?? 340
+        let height = (props["height"] as? NSNumber)?.doubleValue ?? 420
         return AnyView(
             Scene3dFilamentRepresentable(
                 assetPath: assetPath,
                 onReady: { send("ready", ["frames": 1]) }
             )
-            .frame(width: w, height: h)
+            .frame(width: width, height: height)
             .clipped()
         )
     }

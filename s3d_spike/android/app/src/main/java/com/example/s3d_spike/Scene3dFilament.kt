@@ -38,7 +38,10 @@ object Scene3dFilamentPlugin {
 }
 
 @Composable
-private fun Scene3dFilamentComposable(props: Map<String, Any?>, send: MobNativeSend) {
+private fun Scene3dFilamentComposable(
+    props: Map<String, Any?>,
+    send: MobNativeSend,
+) {
     val assetPath = props["asset_path"] as? String ?: return
     val w = (props["width"] as? Number)?.toFloat() ?: 340f
     val h = (props["height"] as? Number)?.toFloat() ?: 420f
@@ -50,7 +53,7 @@ private fun Scene3dFilamentComposable(props: Map<String, Any?>, send: MobNativeS
                 FilamentGlbView(ctx, assetPath) { frames ->
                     ctx.mainExecutor.execute { send("ready", mapOf("frames" to frames)) }
                 }
-            }
+            },
         )
     }
 }
@@ -59,11 +62,13 @@ class FilamentGlbView(
     context: Context,
     assetPath: String,
     private val onReady: (Int) -> Unit,
-) : SurfaceView(context), Choreographer.FrameCallback {
-
+) : SurfaceView(context),
+    Choreographer.FrameCallback {
     companion object {
         // Loads libfilament-jni, libgltfio-jni, libfilament-utils-jni.
-        init { Utils.init() }
+        init {
+            Utils.init()
+        }
     }
 
     private val choreographer = Choreographer.getInstance()
@@ -84,7 +89,8 @@ class FilamentGlbView(
         modelViewer.scene.removeEntity(modelViewer.light)
 
         val light = EntityManager.get().create()
-        LightManager.Builder(LightManager.Type.DIRECTIONAL)
+        LightManager
+            .Builder(LightManager.Type.DIRECTIONAL)
             .color(1.0f, 0.98f, 0.92f)
             .intensity(110_000.0f)
             .direction(0.5f, -1.0f, -0.6f)
