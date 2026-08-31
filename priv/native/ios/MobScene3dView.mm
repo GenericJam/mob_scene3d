@@ -34,6 +34,7 @@
 #include <filament/View.h>
 #include <filament/Viewport.h>
 
+#include <gltfio/Animator.h>
 #include <gltfio/AssetLoader.h>
 #include <gltfio/FilamentAsset.h>
 #include <gltfio/FilamentInstance.h>
@@ -49,6 +50,7 @@
 
 #include <utils/Entity.h>
 #include <utils/EntityManager.h>
+#include <utils/NameComponentManager.h>
 
 #include <backend/PixelBufferDescriptor.h>
 
@@ -58,6 +60,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -66,6 +69,26 @@ using namespace filament::math;
 using namespace filament::gltfio;
 
 namespace {
+
+// The render-thread clip clock for one model's declarative animation state.
+// The Animator itself is NOT held here — it belongs to the gltfio instance
+// and is looked up per frame, so a material-clear instance rebuild keeps the
+// clock without holding a stale pointer.
+struct S3dAnimState {
+  std::string name;
+  std::string playId;
+  int index = -1; // -1 = unknown clip (error state, readback-visible)
+  double duration = 0.0;
+  double clock = 0.0;
+  bool loop = false;
+  double speed = 1.0;
+  bool paused = false;
+  bool hasSeek = false;
+  double lastSeek = 0.0;
+  bool done = false;
+  bool doneDelivered = false;
+  double appliedTime = 0.0;
+};
 
 struct S3dRec {
   utils::Entity entity{};
@@ -78,6 +101,7 @@ struct S3dRec {
   Camera *camera = nullptr;
   std::string status = "ready";
   std::string statusDetail;
+  std::optional<S3dAnimState> anim;
 };
 
 struct S3dAssetEntry {
@@ -126,6 +150,7 @@ NSString *s3d_json_string(NSString *value) {
   MaterialProvider *_materials;
   AssetLoader *_assetLoader;
   ResourceLoader *_resourceLoader;
+  utils::NameComponentManager *_names;
 
   std::map<std::string, S3dRec> _registry;
   std::map<std::string, S3dAssetEntry> _assets;
@@ -147,6 +172,10 @@ NSString *s3d_json_string(NSString *value) {
   CFTimeInterval _lastFrameTimestamp;
   NSUInteger _framesSinceQuery;
   NSUInteger _droppedSinceQuery;
+
+  // Animation clock: one dt per CADisplayLink tick, shared by every playing
+  // clip (main thread only).
+  CFTimeInterval _lastAnimTimestamp;
 }
 @property(nonatomic, strong, nullable) CADisplayLink *displayLink;
 @property(nonatomic, copy) NSString *viewportId;
@@ -217,9 +246,15 @@ NSString *s3d_json_string(NSString *value) {
 
   _materials = createUbershaderProvider(_engine, UBERARCHIVE_DEFAULT_DATA,
                                         UBERARCHIVE_DEFAULT_SIZE);
+  // Name components make FilamentAsset::getName answer for instance node
+  // entities — the readback's named-node world transforms (and therefore
+  // the Chopaat slot-orientation contract) depend on it. The Android AAR
+  // wires one implicitly; here it is explicit.
+  _names = new utils::NameComponentManager(utils::EntityManager::get());
   AssetConfiguration config;
   config.engine = _engine;
   config.materials = _materials;
+  config.names = _names;
   _assetLoader = AssetLoader::create(config);
   ResourceConfiguration resources{};
   resources.engine = _engine;
@@ -287,6 +322,7 @@ NSString *s3d_json_string(NSString *value) {
   if (drain.reset)
     [self clearScene];
   [self applyOps:drain.ops];
+  [self advanceAnimations];
   for (NSDictionary *request in drain.sceneRequests) {
     MobScene3dDeliverScene(request[@"token"], self.viewportId,
                            request[@"request_id"], [self sceneJson]);
@@ -551,6 +587,8 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
     [self setEntityField:op[1] field:@"pickable" value:op[2]];
   } else if ([name isEqualToString:@"set_material"]) {
     [self setMaterial:op[1] material:op[2]];
+  } else if ([name isEqualToString:@"set_animation"]) {
+    [self setAnimation:op[1] animation:op[2]];
   } else if ([name isEqualToString:@"set_camera"]) {
     [self setCameraParams:op[1] camera:op[2]];
   } else if ([name isEqualToString:@"set_light"]) {
@@ -663,6 +701,15 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   NSDictionary *material = data[@"material"];
   if ([material isKindOfClass:[NSDictionary class]])
     [self applyMaterial:rec material:material];
+  // Reconcile the declared animation with the (possibly fresh) instance:
+  // same play_id keeps its clock across a material-clear rebuild; a new
+  // entity starts from seek ?: 0.
+  NSDictionary *animation = data[@"animation"];
+  [self applyAnimationState:rec
+                   entityId:rec->json[@"id"]
+                  animation:[animation isKindOfClass:[NSDictionary class]]
+                                ? animation
+                                : nil];
 }
 
 - (void)buildLight:(S3dRec *)rec data:(NSDictionary *)data {
@@ -704,6 +751,9 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
 }
 
 - (void)tearDownData:(S3dRec *)rec entityId:(NSString *)entityId {
+  // Structural teardown (replace/remove): the clip identity dies with the
+  // data payload; a replacement entity re-resolves from its json.
+  rec->anim.reset();
   if (rec->instance != nullptr) {
     if (rec->inScene) {
       _scene->removeEntities(rec->instance->getEntities(),
@@ -813,6 +863,139 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   }
   [self buildModel:rec data:data];
   [self applyVisibility:entityId];
+}
+
+- (void)setAnimation:(NSString *)entityId animation:(id)animation {
+  S3dRec *rec = [self rec:entityId];
+  if (rec == nullptr)
+    return;
+  NSMutableDictionary *data =
+      [((NSDictionary *)rec->json[@"data"]) mutableCopy];
+  data[@"animation"] = animation ?: [NSNull null];
+  rec->json[@"data"] = data;
+  [self applyAnimationState:rec
+                   entityId:entityId
+                  animation:[animation isKindOfClass:[NSDictionary class]]
+                                ? animation
+                                : nil];
+}
+
+/// Reconcile the declarative animation intent with the render-thread clip
+/// clock. Replay = a play_id change (restart from seek ?: 0); same play_id =
+/// in-place field updates, a changed non-null seek repositions the clock
+/// without restarting (the decision record's seek semantics).
+- (void)applyAnimationState:(S3dRec *)rec
+                   entityId:(NSString *)entityId
+                  animation:(NSDictionary *)animation {
+  if (animation == nil) {
+    // Declaratively "no animation": stop driving the clip; the pose stays
+    // where the clock left it (resources untouched).
+    rec->anim.reset();
+    return;
+  }
+  Animator *animator =
+      rec->instance != nullptr ? rec->instance->getAnimator() : nullptr;
+  if (animator == nullptr) {
+    // No instance = bad_asset already reported; nothing to drive.
+    rec->anim.reset();
+    return;
+  }
+  NSString *name = animation[@"name"];
+  NSString *playId = animation[@"play_id"];
+  if (![name isKindOfClass:[NSString class]] ||
+      ![playId isKindOfClass:[NSString class]]) {
+    rec->anim.reset(); // shadow-validated shape; a raw-op side door isn't
+    return;
+  }
+  std::string nameStr(name.UTF8String);
+  std::string playStr(playId.UTF8String);
+  int index = -1;
+  for (size_t i = 0; i < animator->getAnimationCount(); i++) {
+    if (nameStr == animator->getAnimationName(i)) {
+      index = (int)i;
+      break;
+    }
+  }
+  if (index < 0) {
+    // Unknown clip that raced the shadow's name registry: honest and loud —
+    // an error event to the owner AND an error-shaped animation_state in
+    // the readback. Never a silently idle model.
+    S3dAnimState errorState;
+    errorState.name = nameStr;
+    errorState.playId = playStr;
+    rec->anim = errorState;
+    NSString *error = [NSString
+        stringWithFormat:@"[\"unknown_animation\",%@,%@]",
+                         s3d_json_string(entityId), s3d_json_string(name)];
+    MobScene3dDeliverError(self.viewportId, error);
+    return;
+  }
+  bool hasSeek = !jnull(animation[@"seek"]);
+  double seek = hasSeek ? jnum(animation[@"seek"], 0.0) : 0.0;
+  bool restart = !rec->anim.has_value() || rec->anim->playId != playStr ||
+                 rec->anim->name != nameStr || rec->anim->index < 0;
+  if (restart) {
+    S3dAnimState fresh;
+    fresh.name = nameStr;
+    fresh.playId = playStr;
+    fresh.index = index;
+    fresh.duration = (double)animator->getAnimationDuration((size_t)index);
+    fresh.clock = hasSeek ? seek : 0.0;
+    rec->anim = fresh;
+  } else if (hasSeek && (!rec->anim->hasSeek || rec->anim->lastSeek != seek)) {
+    rec->anim->clock = seek;
+  }
+  rec->anim->loop = [animation[@"loop"] boolValue];
+  rec->anim->speed = jnum(animation[@"speed"], 1.0);
+  rec->anim->paused = [animation[@"paused"] boolValue];
+  rec->anim->hasSeek = hasSeek;
+  rec->anim->lastSeek = seek;
+}
+
+/// Advance every model's clip clock and pose; deliver completions.
+- (void)advanceAnimations {
+  // Clamped dt: a background pause must not fast-forward clips to their end
+  // on resume (the clock freezes with the vsync loop).
+  CFTimeInterval now = self.displayLink.timestamp;
+  double dt = 0.0;
+  if (_lastAnimTimestamp > 0)
+    dt = std::clamp(now - _lastAnimTimestamp, 0.0, 0.1);
+  _lastAnimTimestamp = now;
+  for (auto &pair : _registry) {
+    S3dRec &rec = pair.second;
+    if (!rec.anim.has_value() || rec.anim->index < 0)
+      continue;
+    Animator *animator =
+        rec.instance != nullptr ? rec.instance->getAnimator() : nullptr;
+    if (animator == nullptr)
+      continue;
+    S3dAnimState &st = *rec.anim;
+    if (!st.paused && !st.done)
+      st.clock += dt * st.speed;
+    if (st.duration <= 0.0) {
+      st.appliedTime = 0.0;
+    } else if (st.loop) {
+      st.appliedTime = std::fmod(st.clock, st.duration);
+      if (st.appliedTime < 0)
+        st.appliedTime += st.duration;
+    } else {
+      st.appliedTime = std::min(st.clock, st.duration);
+    }
+    animator->applyAnimation((size_t)st.index, (float)st.appliedTime);
+    animator->updateBoneMatrices();
+    if (!st.loop && !st.paused && !st.done && st.clock >= st.duration) {
+      // Clip end: clamp the pose at the final frame and deliver
+      // {:animation_done, play_id} once per play_id. Completion needs a
+      // RUNNING clock — a paused clip seeked to the end holds the final
+      // pose without completing until unpaused. Seeking a completed clip
+      // repositions the pose; only a new play_id runs it again.
+      st.done = true;
+      if (!st.doneDelivered) {
+        st.doneDelivered = true;
+        MobScene3dDeliverAnimationDone(self.viewportId, @(st.playId.c_str()));
+      }
+    }
+  }
 }
 
 - (void)setCameraParams:(NSString *)entityId camera:(NSDictionary *)camera {
@@ -982,6 +1165,16 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   if (first != nullptr)
     entry.freeInstances.push_back(first);
   auto [inserted, _] = _assets.emplace(key, entry);
+  // Publish the asset's clip names so the BEAM-thread shadow can reject
+  // unknown animation names synchronously from now on.
+  NSMutableArray<NSString *> *clipNames = [NSMutableArray array];
+  Animator *animator = first != nullptr ? first->getAnimator() : nullptr;
+  if (animator != nullptr) {
+    for (size_t i = 0; i < animator->getAnimationCount(); i++) {
+      [clipNames addObject:@(animator->getAnimationName(i))];
+    }
+  }
+  MobScene3dRegisterAssetAnimations(path, clipNames);
   return &inserted->second;
 }
 
@@ -1003,6 +1196,50 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
     entity[@"status"] = @(rec.status.c_str());
     if (!rec.statusDetail.empty())
       entity[@"status_detail"] = @(rec.statusDetail.c_str());
+    if (rec.anim.has_value()) {
+      // Native truth, not intent echoed back: the applier's own clip clock
+      // (data.animation above is the mirrored intent).
+      const S3dAnimState &st = *rec.anim;
+      NSMutableDictionary *animState = [NSMutableDictionary dictionary];
+      animState[@"name"] = @(st.name.c_str());
+      animState[@"play_id"] = @(st.playId.c_str());
+      if (st.index < 0) {
+        animState[@"error"] = @"unknown_animation";
+      } else {
+        animState[@"time"] = @(std::round(st.appliedTime * 1000.0) / 1000.0);
+        animState[@"done"] = @(st.done);
+        animState[@"paused"] = @(st.paused);
+        animState[@"loop"] = @(st.loop);
+      }
+      entity[@"animation_state"] = animState;
+    }
+    // World transforms of the instance's NAMED glTF nodes: animation
+    // retargets nodes inside the asset, so post-settle orientations (the
+    // Chopaat shell-slot contract) are readable per node.
+    if (rec.instance != nullptr) {
+      auto assetIt = _assets.find(rec.assetRef);
+      const FilamentAsset *asset =
+          assetIt != _assets.end() ? assetIt->second.asset : nullptr;
+      if (asset != nullptr) {
+        NSMutableDictionary *nodes = [NSMutableDictionary dictionary];
+        const utils::Entity *nodeEntities = rec.instance->getEntities();
+        size_t nodeCount = rec.instance->getEntityCount();
+        for (size_t i = 0; i < nodeCount; i++) {
+          const char *nodeName = asset->getName(nodeEntities[i]);
+          if (nodeName == nullptr)
+            continue;
+          const mat4f nodeWorld =
+              tm.getWorldTransform(tm.getInstance(nodeEntities[i]));
+          NSMutableArray *nodeArr = [NSMutableArray arrayWithCapacity:16];
+          const float *nm = nodeWorld.asArray();
+          for (int j = 0; j < 16; j++)
+            [nodeArr addObject:@(nm[j])];
+          nodes[@(nodeName)] = nodeArr;
+        }
+        if (nodes.count > 0)
+          entity[@"nodes"] = nodes;
+      }
+    }
     entities[@(pair.first.c_str())] = entity;
   }
   NSData *json =
@@ -1040,6 +1277,7 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   _materials->destroyMaterials();
   delete _materials;
   delete _resourceLoader;
+  delete _names;
   _engine->destroy(_skybox);
   _engine->destroyCameraComponent(_fallbackCameraEntity);
   utils::EntityManager::get().destroy(_fallbackCameraEntity);

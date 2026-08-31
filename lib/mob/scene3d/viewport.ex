@@ -34,6 +34,7 @@ defmodule Mob.Scene3d.Viewport do
         width: props[:width] || 340,
         height: props[:height] || 420,
         pick_tag: props[:on_pick] || :pick,
+        anim_tag: props[:on_animation_done] || :animation_done,
         screen_pid: props[:screen_pid],
         committed: IR.empty()
       )
@@ -48,6 +49,7 @@ defmodule Mob.Scene3d.Viewport do
         width: props[:width] || socket.assigns.width,
         height: props[:height] || socket.assigns.height,
         pick_tag: props[:on_pick] || socket.assigns.pick_tag,
+        anim_tag: props[:on_animation_done] || socket.assigns.anim_tag,
         screen_pid: props[:screen_pid] || socket.assigns.screen_pid
       )
 
@@ -80,6 +82,20 @@ defmodule Mob.Scene3d.Viewport do
 
           _assigns ->
             Logger.warning("[scene3d] pick event with no owning screen: #{inspect(entity_id)}")
+        end
+
+      {:scene3d_animation_done, _viewport_id, play_id} ->
+        # A non-looping clip reached its end: re-tag with the screen's
+        # configured on_animation_done (default :animation_done, so the
+        # out-of-box message is the decision record's {:animation_done,
+        # play_id}) and forward — play_id is the correlation token the
+        # screen set when it started the clip.
+        case socket.assigns do
+          %{screen_pid: screen_pid, anim_tag: tag} when is_pid(screen_pid) ->
+            send(screen_pid, {tag, play_id})
+
+          _assigns ->
+            Logger.warning("[scene3d] animation_done with no owning screen: #{inspect(play_id)}")
         end
 
       {:scene3d_error, viewport_id, error} ->

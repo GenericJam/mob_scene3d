@@ -204,6 +204,7 @@ fn nif_scene3d_destroy(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.E
 // kind = "sample": {:scene3d_sample, Viewport, A, B}     (A=request id, B=json)
 // kind = "stats": {:scene3d_frame_stats, Viewport, A, B} (A=request id, B=json)
 // kind = "pick_event": {:scene3d_pick_event, Viewport, A} (A=entity id)
+// kind = "anim_done": {:scene3d_animation_done, Viewport, A} (A=play id)
 // kind = "error": {:scene3d_error, Viewport, A}          (A=error json)
 // kind = "ready": {:scene3d_ready, Viewport}
 export fn Java_io_mob_scene3d_MobScene3dBridge_nativeDeliverScene3d(
@@ -246,6 +247,9 @@ export fn Java_io_mob_scene3d_MobScene3dBridge_nativeDeliverScene3d(
     } else if (std.mem.eql(u8, kind_s, "pick_event")) blk: {
         const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
         break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_pick_event"), vid_term, a_term });
+    } else if (std.mem.eql(u8, kind_s, "anim_done")) blk: {
+        const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
+        break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_animation_done"), vid_term, a_term });
     } else if (std.mem.eql(u8, kind_s, "error")) blk: {
         const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
         break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_error"), vid_term, a_term });

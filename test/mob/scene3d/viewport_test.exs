@@ -110,6 +110,43 @@ defmodule Mob.Scene3d.ViewportTest do
     end
   end
 
+  test "animation completion is re-tagged and forwarded to the owning screen" do
+    socket = mounted(%{id: :board, on_animation_done: :throw_settled, screen_pid: self()})
+
+    {:noreply, _socket} =
+      Viewport.handle_info({:scene3d_animation_done, "board", "roll-uuid-1"}, socket)
+
+    assert_received {:throw_settled, "roll-uuid-1"}
+  end
+
+  test "the animation-done tag defaults to :animation_done — the tuple as-is" do
+    socket = mounted(%{id: :board, screen_pid: self()})
+
+    {:noreply, _socket} =
+      Viewport.handle_info({:scene3d_animation_done, "board", "roll-uuid-2"}, socket)
+
+    assert_received {:animation_done, "roll-uuid-2"}
+  end
+
+  test "an animation-done event with no screen pid logs instead of crashing" do
+    socket = mounted(%{id: :board})
+
+    log =
+      capture_log(fn ->
+        {:noreply, _socket} =
+          Viewport.handle_info({:scene3d_animation_done, "board", "roll-uuid-3"}, socket)
+      end)
+
+    assert log =~ "no owning screen"
+    refute_received {:animation_done, _play_id}
+  end
+
+  test "Mob.Scene3d.viewport/1 refuses a non-atom on_animation_done tag" do
+    assert_raise ArgumentError, ~r/on_animation_done must be an atom/, fn ->
+      Mob.Scene3d.viewport(id: :board, on_animation_done: "strings_leak")
+    end
+  end
+
   test "async native errors are logged, never swallowed" do
     socket = mounted(%{id: :board})
 

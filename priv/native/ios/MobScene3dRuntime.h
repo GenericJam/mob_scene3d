@@ -39,8 +39,18 @@ void MobScene3dDeliverReply(NSString *kind, NSData *token, NSString *viewportId,
 /// Touch-path pick hit → {:scene3d_pick_event, viewport, entity_id} to the
 /// viewport owner. Misses deliver nothing (the honest-miss ruling).
 void MobScene3dDeliverPickEvent(NSString *viewportId, NSString *entityId);
+/// Non-looping clip reached its end → {:scene3d_animation_done, viewport,
+/// play_id} to the viewport owner (at most once per play_id).
+void MobScene3dDeliverAnimationDone(NSString *viewportId, NSString *playId);
 void MobScene3dDeliverError(NSString *viewportId, NSString *errorJson);
 void MobScene3dDeliverReady(NSString *viewportId);
+
+/// Renderer → runtime: the clip names of a loaded .glb, keyed by the
+/// resolved asset path, so the BEAM-thread shadow validation can reject an
+/// unknown animation name synchronously once the asset is known. Main
+/// thread; the runtime copies under its lock.
+void MobScene3dRegisterAssetAnimations(NSString *assetPath,
+                                       NSArray<NSString *> *names);
 
 #ifdef __cplusplus
 }

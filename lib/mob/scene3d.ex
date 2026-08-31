@@ -60,19 +60,37 @@ defmodule Mob.Scene3d do
       `on_tap`/`on_dismiss`). A tap that hits nothing pickable is **not** an
       event — misses are a query result (`pick/3`), never noise pushed at
       the screen.
+    * `:on_animation_done` — atom tag for animation-completion events,
+      default `:animation_done`. When a model's non-looping clip reaches its
+      end, the owning screen's `handle_info/2` receives `{tag, play_id}` —
+      out of the box that is the decision record's `{:animation_done,
+      play_id}` tuple as-is. `play_id` is the correlation token from the
+      `%Mob.Scene3d.IR.Animation{}` the screen set; delivered at most once
+      per `play_id` (a replay is a new `play_id`).
   """
   @spec viewport(keyword()) :: map()
   def viewport(opts) when is_list(opts) do
     tag = Keyword.get(opts, :on_pick, :pick)
+    anim_tag = Keyword.get(opts, :on_animation_done, :animation_done)
 
     unless is_atom(tag) do
       raise ArgumentError, "Mob.Scene3d.viewport :on_pick must be an atom, got: #{inspect(tag)}"
     end
 
+    unless is_atom(anim_tag) do
+      raise ArgumentError,
+            "Mob.Scene3d.viewport :on_animation_done must be an atom, got: #{inspect(anim_tag)}"
+    end
+
     # render/1 runs in the screen server process, so self() here is the
-    # screen pid — the pick-event delivery target the Viewport component
+    # screen pid — the event delivery target the Viewport component
     # forwards to (the component itself lives in its own process).
-    opts = opts |> Keyword.put(:on_pick, tag) |> Keyword.put(:screen_pid, self())
+    opts =
+      opts
+      |> Keyword.put(:on_pick, tag)
+      |> Keyword.put(:on_animation_done, anim_tag)
+      |> Keyword.put(:screen_pid, self())
+
     Mob.UI.native_view(Mob.Scene3d.Viewport, opts)
   end
 
@@ -137,6 +155,19 @@ defmodule Mob.Scene3d do
   Returns `{:ok, scene_map}` with string keys mirroring the wire encoding,
   or an honest error (`{:no_viewport, id}` before the surface attaches,
   `:timeout`, ...).
+
+  Native-only truth carried per entity beyond the mirrored IR fields:
+
+    * `"world_transform"` — 16 floats, column-major, from Filament's
+      `TransformManager`
+    * `"status"` — `"ready"` or `"error"` (+ `"status_detail"`)
+    * `"animation_state"` (models with an animation) — `%{"name", "play_id",
+      "time", "done", "paused", "loop"}` read from the applier's clip clock,
+      or `%{"name", "play_id", "error" => "unknown_animation"}` when the
+      clip name is not in the asset
+    * `"nodes"` (models) — `%{node_name => [16 floats]}` world transforms of
+      the instance's *named* glTF nodes, so post-settle orientations of
+      animation-retargeted nodes are assertable (the Chopaat contract)
   """
   @spec scene(node() | String.t(), String.t() | timeout()) :: {:ok, map()} | {:error, term()}
   def scene(target, arg \\ @scene_timeout)

@@ -102,6 +102,29 @@ defmodule Mob.Scene3dTest do
                Enum.filter(NativeMock.calls(), &(elem(&1, 0) in [:caps, :apply_patch]))
     end
 
+    test "set_animation against an applier that predates it degrades loudly" do
+      # The exact skew this lane creates: an old native build whose caps
+      # predate animation support. New op support is ADDITIVE (declared via
+      # caps ops, schema unchanged) — the guard refuses before the wire.
+      pre_animation_caps =
+        %{"schema" => Wire.schema(), "ops" => Wire.v1_op_names() -- ["set_animation"]}
+        |> :json.encode()
+        |> IO.iodata_to_binary()
+
+      NativeMock.stub(:caps, {:ok, pre_animation_caps})
+
+      committed = probe_scene()
+
+      animated =
+        update_in(committed.entities["probe"], fn %Entity{data: %Model{} = model} = probe ->
+          animation = %Mob.Scene3d.IR.Animation{name: "throw_k4_v0", play_id: "roll-1"}
+          %Entity{probe | data: %Model{model | animation: animation}}
+        end)
+
+      assert {:error, {:unsupported, :set_animation}} = Scene3d.commit("vp", committed, animated)
+      refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
+    end
+
     test "a schema mismatch is refused loudly" do
       alien = %{"schema" => 99, "ops" => Wire.v1_op_names()}
       NativeMock.stub(:caps, {:ok, alien |> :json.encode() |> IO.iodata_to_binary()})

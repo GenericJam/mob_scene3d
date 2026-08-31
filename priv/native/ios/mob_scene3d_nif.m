@@ -23,13 +23,12 @@
 
 static NSString *const kOkJson = @"{\"ok\":true}";
 
-// set_animation deliberately absent: animation playback is a later bead; the
-// Elixir caps guard refuses it loudly before it reaches this wire.
 static NSString *const kCapsJson =
     @"{\"schema\":1,\"ops\":[\"add_entity\",\"replace_entity\",\"remove_"
     @"entity\","
     @"\"set_parent\",\"set_transform\",\"set_visible\",\"set_pickable\","
-    @"\"set_material\",\"set_camera\",\"set_light\",\"set_environment\"]}";
+    @"\"set_material\",\"set_animation\",\"set_camera\",\"set_light\","
+    @"\"set_environment\"]}";
 
 @implementation MobScene3dDrain
 @end
@@ -81,6 +80,28 @@ static NSLock *s3d_lock(void) {
   return lock;
 }
 
+// Asset path -> clip names, registered by the renderer after a gltfio load.
+// Lets the BEAM-thread shadow validation reject an unknown animation name
+// SYNCHRONOUSLY once the asset is known; before that the render thread
+// re-checks and delivers an async scene error (the two-tier honesty
+// bad_asset has).
+static NSMutableDictionary<NSString *, NSArray<NSString *> *> *
+s3d_asset_animations(void) {
+  static NSMutableDictionary *map = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    map = [NSMutableDictionary dictionary];
+  });
+  return map;
+}
+
+void MobScene3dRegisterAssetAnimations(NSString *assetPath,
+                                       NSArray<NSString *> *names) {
+  [s3d_lock() lock];
+  s3d_asset_animations()[assetPath] = [names copy];
+  [s3d_lock() unlock];
+}
+
 // ── Shadow semantics (mirrors Mob.Scene3d.IR.Patch, the Elixir reference) ──
 
 static NSArray *s3d_err(NSArray<NSString *> *args) { return args; }
@@ -98,14 +119,29 @@ static NSString *_Nullable s3d_parent_of(NSDictionary *entity) {
   return [parent isKindOfClass:[NSString class]] ? parent : nil;
 }
 
-static BOOL s3d_has_animation(NSDictionary *entity) {
+/// Unknown clip names reject synchronously when the asset's clip list is
+/// already registered (loaded by the render thread); an asset still loading
+/// validates render-side instead and errors asynchronously — either way the
+/// failure is loud, never a silently idle model. Caller holds s3d_lock()
+/// (NSLock is not reentrant, so this reads the registry directly).
+static NSArray *_Nullable s3d_animation_error(NSDictionary *entity) {
   id data = entity[@"data"];
   if (![data isKindOfClass:[NSDictionary class]])
-    return NO;
+    return nil;
   if (![s3d_kind_of(entity) isEqualToString:@"model"])
-    return NO;
+    return nil;
   id anim = ((NSDictionary *)data)[@"animation"];
-  return anim != nil && anim != [NSNull null];
+  if (![anim isKindOfClass:[NSDictionary class]])
+    return nil;
+  NSString *name = ((NSDictionary *)anim)[@"name"];
+  id asset = ((NSDictionary *)data)[@"asset"];
+  if (![asset isKindOfClass:[NSString class]] ||
+      ![name isKindOfClass:[NSString class]])
+    return nil;
+  NSArray<NSString *> *known = s3d_asset_animations()[asset];
+  if (known == nil || [known containsObject:name])
+    return nil;
+  return s3d_err(@[ @"unknown_animation", entity[@"id"] ?: @"", name ]);
 }
 
 static BOOL s3d_cyclic(NSDictionary<NSString *, NSDictionary *> *shadow,
@@ -160,8 +196,9 @@ static NSArray *_Nullable s3d_apply_op(
       return s3d_err(@[ @"duplicate_entity", eid ]);
     if (parent != nil && shadow[parent] == nil)
       return s3d_err(@[ @"unknown_parent", eid, parent ]);
-    if (s3d_has_animation(entity))
-      return s3d_err(@[ @"unsupported", @"animation" ]);
+    NSArray *animError = s3d_animation_error(entity);
+    if (animError != nil)
+      return animError;
     if (!replacing)
       [order addObject:eid];
     shadow[eid] = entity;
@@ -211,7 +248,14 @@ static NSArray *_Nullable s3d_apply_op(
     return nil;
   }
   if ([name isEqualToString:@"set_animation"]) {
-    return s3d_err(@[ @"unsupported", @"animation" ]);
+    if (![s3d_kind_of(entity) isEqualToString:@"model"])
+      return s3d_err(@[ @"kind_mismatch", eid, @"model" ]);
+    NSDictionary *updated = s3d_put_data_field(entity, @"animation", value);
+    NSArray *animError = s3d_animation_error(updated);
+    if (animError != nil)
+      return animError;
+    shadow[eid] = updated;
+    return nil;
   }
   if ([name isEqualToString:@"set_camera"] ||
       [name isEqualToString:@"set_light"] ||
@@ -385,6 +429,14 @@ void MobScene3dDeliverPickEvent(NSString *viewportId, NSString *entityId) {
     return enif_make_tuple3(env, enif_make_atom(env, "scene3d_pick_event"),
                             s3d_make_bin(env, viewportId),
                             s3d_make_bin(env, entityId));
+  });
+}
+
+void MobScene3dDeliverAnimationDone(NSString *viewportId, NSString *playId) {
+  s3d_send_to(s3d_owner(viewportId), ^ERL_NIF_TERM(ErlNifEnv *env) {
+    return enif_make_tuple3(env, enif_make_atom(env, "scene3d_animation_done"),
+                            s3d_make_bin(env, viewportId),
+                            s3d_make_bin(env, playId));
   });
 }
 

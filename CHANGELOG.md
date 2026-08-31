@@ -14,6 +14,29 @@ for the canonical process.
 
 ### Added
 
+- glTF animation playback (bead `mob_scene3d-al6`;
+  `decisions/2026-08-30-animation-playback.md`): the honest stub is now the
+  real thing on both platforms.
+  - `%Mob.Scene3d.IR.Animation{}` state drives gltfio's `Animator` on the
+    render thread: named-clip selection within one `.glb`, replay via
+    `play_id` change, `loop`, `speed`, `paused`, and absolute `seek`
+    (repositions without restarting).
+  - `on_animation_done: tag` on the viewport (default `:animation_done`) —
+    a non-looping clip reaching its end delivers `{tag, play_id}` to the
+    owning screen, at most once per `play_id` (the pick-event grammar,
+    applied to completions).
+  - `scene/1` readback gains native truth per model: `"animation_state"`
+    (name, play_id, clip clock, done/paused/loop — or an
+    `unknown_animation` error marker) and `"nodes"` (world transforms of
+    the instance's named glTF nodes), so post-settle orientations of
+    animation-retargeted nodes are assertable (the Chopaat cowrie-throw
+    contract).
+  - `set_animation` joins the native caps op list (additive; wire schema
+    stays 1 per the versioning rules). Unknown clip names reject
+    synchronously (`{:unknown_animation, id, name}`) once the asset's clip
+    list is registered, and error asynchronously via `{:scene3d_error, ...}`
+    when the name check races the asset load.
+
 - Picking + agent introspection (beads `mob_scene3d-na8`, `mob_scene3d-0n7`;
   `decisions/2026-08-30-pick-introspection.md`):
   - `on_pick: tag` on the viewport — taps on `pickable: true` models ride
