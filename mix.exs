@@ -7,7 +7,22 @@ defmodule MobScene3d.MixProject do
       version: "0.1.0",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      elixirc_paths: elixirc_paths(Mix.env()),
+      deps: deps(),
+      package: package()
+    ]
+  end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      # Native sources + the plugin manifest must ship in the package — the
+      # host's native build compiles them from deps/mob_scene3d/priv
+      # (mob_camera precedent).
+      files: ~w(lib src priv mix.exs README* CHANGELOG*)
     ]
   end
 
@@ -19,6 +34,7 @@ defmodule MobScene3d.MixProject do
 
   defp deps do
     [
+      {:mob, "~> 0.7"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false},
       # ex_slop — Credo plugin that catches AI-generated Elixir patterns
