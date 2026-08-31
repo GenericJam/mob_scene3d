@@ -20,6 +20,13 @@ defmodule Mob.Scene3d.Native do
   @callback request_scene(viewport_id :: binary(), request_id :: binary()) ::
               {:ok, binary()} | {:error, :nif_not_loaded}
   @callback destroy(viewport_id :: binary()) :: {:ok, binary()} | {:error, :nif_not_loaded}
+  @callback pick(viewport_id :: binary(), query_json :: binary()) ::
+              {:ok, binary()} | {:error, :nif_not_loaded}
+  @callback sample(viewport_id :: binary(), query_json :: binary()) ::
+              {:ok, binary()} | {:error, :nif_not_loaded}
+  @callback frame_stats(viewport_id :: binary(), request_id :: binary()) ::
+              {:ok, binary()} | {:error, :nif_not_loaded}
+  @callback viewports() :: {:ok, binary()} | {:error, :nif_not_loaded}
 
   @doc "The configured implementation (mocked in host tests via app env)."
   @spec impl() :: module()
@@ -45,6 +52,22 @@ defmodule Mob.Scene3d.Native.NIF do
   @impl true
   def destroy(viewport_id) when is_binary(viewport_id),
     do: call(fn -> :mob_scene3d_nif.scene3d_destroy(viewport_id) end)
+
+  @impl true
+  def pick(viewport_id, query_json) when is_binary(viewport_id) and is_binary(query_json),
+    do: call(fn -> :mob_scene3d_nif.scene3d_pick(viewport_id, query_json) end)
+
+  @impl true
+  def sample(viewport_id, query_json) when is_binary(viewport_id) and is_binary(query_json),
+    do: call(fn -> :mob_scene3d_nif.scene3d_sample(viewport_id, query_json) end)
+
+  @impl true
+  def frame_stats(viewport_id, request_id)
+      when is_binary(viewport_id) and is_binary(request_id),
+      do: call(fn -> :mob_scene3d_nif.scene3d_frame_stats(viewport_id, request_id) end)
+
+  @impl true
+  def viewports, do: call(fn -> :mob_scene3d_nif.scene3d_viewports() end)
 
   defp call(fun) do
     {:ok, fun.()}

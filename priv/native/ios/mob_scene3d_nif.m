@@ -42,6 +42,7 @@ static NSString *const kCapsJson =
     NSMutableDictionary<NSString *, NSDictionary *> *shadow;
 @property(nonatomic, strong) NSMutableArray<NSArray *> *pendingOps;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *sceneRequests;
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *queries;
 @property(nonatomic, strong, nullable) NSData *ownerPid;
 @property(nonatomic, weak, nullable) NSObject *view;
 @property(nonatomic, assign) BOOL resetRequested;
@@ -55,6 +56,7 @@ static NSString *const kCapsJson =
     _shadow = [NSMutableDictionary dictionary];
     _pendingOps = [NSMutableArray array];
     _sceneRequests = [NSMutableArray array];
+    _queries = [NSMutableArray array];
   }
   return self;
 }
@@ -305,12 +307,15 @@ MobScene3dDrain *MobScene3dDrainTick(NSString *viewportId) {
   if (state == nil) {
     drain.ops = @[];
     drain.sceneRequests = @[];
+    drain.queries = @[];
     drain.reset = NO;
   } else {
     drain.ops = [state.pendingOps copy];
     [state.pendingOps removeAllObjects];
     drain.sceneRequests = [state.sceneRequests copy];
     [state.sceneRequests removeAllObjects];
+    drain.queries = [state.queries copy];
+    [state.queries removeAllObjects];
     drain.reset = state.resetRequested;
     state.resetRequested = NO;
   }
@@ -354,6 +359,35 @@ static NSData *s3d_owner(NSString *viewportId) {
   NSData *owner = s3d_viewports()[viewportId].ownerPid;
   [s3d_lock() unlock];
   return owner;
+}
+
+void MobScene3dDeliverReply(NSString *kind, NSData *token,
+                            NSString *viewportId, NSString *requestId,
+                            NSString *json) {
+  const char *atomName = NULL;
+  if ([kind isEqualToString:@"pick"]) {
+    atomName = "scene3d_pick";
+  } else if ([kind isEqualToString:@"sample"]) {
+    atomName = "scene3d_sample";
+  } else if ([kind isEqualToString:@"stats"]) {
+    atomName = "scene3d_frame_stats";
+  } else {
+    return;
+  }
+  s3d_send_to(token, ^ERL_NIF_TERM(ErlNifEnv *env) {
+    return enif_make_tuple4(env, enif_make_atom(env, atomName),
+                            s3d_make_bin(env, viewportId),
+                            s3d_make_bin(env, requestId),
+                            s3d_make_bin(env, json));
+  });
+}
+
+void MobScene3dDeliverPickEvent(NSString *viewportId, NSString *entityId) {
+  s3d_send_to(s3d_owner(viewportId), ^ERL_NIF_TERM(ErlNifEnv *env) {
+    return enif_make_tuple3(env, enif_make_atom(env, "scene3d_pick_event"),
+                            s3d_make_bin(env, viewportId),
+                            s3d_make_bin(env, entityId));
+  });
 }
 
 void MobScene3dDeliverError(NSString *viewportId, NSString *errorJson) {
@@ -484,6 +518,102 @@ static ERL_NIF_TERM nif_scene3d_scene(ErlNifEnv *env, int argc,
   return s3d_result(env, kOkJson);
 }
 
+// Shared shape for pick/sample/stats: parse the query, capture the caller
+// pid as the reply token, enqueue for the render thread. no_viewport when
+// no renderer is attached — a query against nothing is an error, not a hang.
+static ERL_NIF_TERM s3d_enqueue_query(ErlNifEnv *env, ERL_NIF_TERM vidTerm,
+                                      NSString *kind, NSDictionary *params) {
+  NSString *viewportId = s3d_term_to_string(env, vidTerm);
+  if (viewportId == nil)
+    return enif_make_badarg(env);
+  NSString *requestId = params[@"request_id"];
+  if (![requestId isKindOfClass:[NSString class]] || requestId.length == 0)
+    return s3d_result(env, s3d_error_json(@[ @"bad_query", @"request_id" ]));
+
+  ErlNifPid selfPid;
+  enif_self(env, &selfPid);
+  NSData *pidData = [NSData dataWithBytes:&selfPid length:sizeof(ErlNifPid)];
+
+  BOOL attached = NO;
+  [s3d_lock() lock];
+  S3dViewportState *state = s3d_viewports()[viewportId];
+  attached = state != nil && state.view != nil;
+  if (attached) {
+    [state.queries addObject:@{
+      @"kind" : kind,
+      @"request_id" : requestId,
+      @"token" : pidData,
+      @"params" : params
+    }];
+  }
+  [s3d_lock() unlock];
+
+  if (!attached)
+    return s3d_result(env, s3d_error_json(@[ @"no_viewport", viewportId ]));
+  return s3d_result(env, kOkJson);
+}
+
+static NSDictionary *_Nullable s3d_parse_query(ErlNifEnv *env,
+                                               ERL_NIF_TERM term) {
+  NSString *json = s3d_term_to_string(env, term);
+  if (json == nil)
+    return nil;
+  NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
+  id parsed = [NSJSONSerialization JSONObjectWithData:data
+                                              options:0
+                                                error:nil];
+  return [parsed isKindOfClass:[NSDictionary class]] ? parsed : nil;
+}
+
+static ERL_NIF_TERM nif_scene3d_pick(ErlNifEnv *env, int argc,
+                                     const ERL_NIF_TERM argv[]) {
+  (void)argc;
+  NSDictionary *params = s3d_parse_query(env, argv[1]);
+  if (params == nil)
+    return s3d_result(env, s3d_error_json(@[ @"bad_query", @"parse" ]));
+  return s3d_enqueue_query(env, argv[0], @"pick", params);
+}
+
+static ERL_NIF_TERM nif_scene3d_sample(ErlNifEnv *env, int argc,
+                                       const ERL_NIF_TERM argv[]) {
+  (void)argc;
+  NSDictionary *params = s3d_parse_query(env, argv[1]);
+  if (params == nil)
+    return s3d_result(env, s3d_error_json(@[ @"bad_query", @"parse" ]));
+  return s3d_enqueue_query(env, argv[0], @"sample", params);
+}
+
+static ERL_NIF_TERM nif_scene3d_frame_stats(ErlNifEnv *env, int argc,
+                                            const ERL_NIF_TERM argv[]) {
+  (void)argc;
+  NSString *requestId = s3d_term_to_string(env, argv[1]);
+  if (requestId == nil)
+    return enif_make_badarg(env);
+  return s3d_enqueue_query(env, argv[0], @"stats",
+                           @{@"request_id" : requestId});
+}
+
+static ERL_NIF_TERM nif_scene3d_viewports(ErlNifEnv *env, int argc,
+                                          const ERL_NIF_TERM argv[]) {
+  (void)argc;
+  (void)argv;
+  NSMutableArray *ids = [NSMutableArray array];
+  [s3d_lock() lock];
+  [s3d_viewports() enumerateKeysAndObjectsUsingBlock:^(
+                       NSString *key, S3dViewportState *state, BOOL *stop) {
+    (void)stop;
+    if (state.view != nil)
+      [ids addObject:key];
+  }];
+  [s3d_lock() unlock];
+  NSData *json =
+      [NSJSONSerialization dataWithJSONObject:@{@"viewports" : ids}
+                                      options:0
+                                        error:nil];
+  return s3d_result(env, [[NSString alloc] initWithData:json
+                                               encoding:NSUTF8StringEncoding]);
+}
+
 static ERL_NIF_TERM nif_scene3d_destroy(ErlNifEnv *env, int argc,
                                         const ERL_NIF_TERM argv[]) {
   (void)argc;
@@ -498,6 +628,7 @@ static ERL_NIF_TERM nif_scene3d_destroy(ErlNifEnv *env, int argc,
     [state.shadow removeAllObjects];
     [state.pendingOps removeAllObjects];
     [state.sceneRequests removeAllObjects];
+    [state.queries removeAllObjects];
     state.resetRequested = YES;
   }
   [s3d_lock() unlock];
@@ -518,6 +649,10 @@ static ErlNifFunc nif_funcs[] = {
     {"scene3d_apply", 2, nif_scene3d_apply, 0},
     {"scene3d_scene", 2, nif_scene3d_scene, 0},
     {"scene3d_destroy", 1, nif_scene3d_destroy, 0},
+    {"scene3d_pick", 2, nif_scene3d_pick, 0},
+    {"scene3d_sample", 2, nif_scene3d_sample, 0},
+    {"scene3d_frame_stats", 2, nif_scene3d_frame_stats, 0},
+    {"scene3d_viewports", 0, nif_scene3d_viewports, 0},
 };
 
 ERL_NIF_INIT(mob_scene3d_nif, nif_funcs, load, NULL, NULL, NULL)

@@ -40,6 +40,9 @@ defmodule Mob.Scene3d do
   alias Mob.Scene3d.{Native, Wire}
 
   @scene_timeout 2_000
+  # Host-side rpc wrappers add headroom over the device-local await so the
+  # local :timeout (honest, per-query) wins over a blunt :badrpc.
+  @rpc_headroom 3_000
 
   @doc """
   A screen element hosting the native Filament viewport.
@@ -51,9 +54,25 @@ defmodule Mob.Scene3d do
     * `:ir` — the `%Mob.Scene3d.IR{}` to commit, straight from assigns.
       Defaults to the empty scene.
     * `:width` / `:height` — viewport size in dp/pt.
+    * `:on_pick` — atom tag for pick events, default `:pick`. A tap on a
+      model with `pickable: true` delivers `{tag, entity_id}` to the owning
+      screen's `handle_info/2` (mob's configurable-tag grammar, like
+      `on_tap`/`on_dismiss`). A tap that hits nothing pickable is **not** an
+      event — misses are a query result (`pick/3`), never noise pushed at
+      the screen.
   """
   @spec viewport(keyword()) :: map()
   def viewport(opts) when is_list(opts) do
+    tag = Keyword.get(opts, :on_pick, :pick)
+
+    unless is_atom(tag) do
+      raise ArgumentError, "Mob.Scene3d.viewport :on_pick must be an atom, got: #{inspect(tag)}"
+    end
+
+    # render/1 runs in the screen server process, so self() here is the
+    # screen pid — the pick-event delivery target the Viewport component
+    # forwards to (the component itself lives in its own process).
+    opts = opts |> Keyword.put(:on_pick, tag) |> Keyword.put(:screen_pid, self())
     Mob.UI.native_view(Mob.Scene3d.Viewport, opts)
   end
 
@@ -106,20 +125,193 @@ defmodule Mob.Scene3d do
   echoed back. Divergence between this and the committed IR is, by
   construction, a wire/applier bug; detecting that is the point.
 
-  Blocks the calling process for the round-trip (the reply rides the next
-  render tick). Returns `{:ok, scene_map}` with string keys mirroring the
-  wire encoding, or an honest error (`{:no_viewport, id}` before the
-  surface attaches, `:timeout`, ...).
+  Two calling shapes, mirroring `Mob.Test` conventions:
+
+    * `scene(node)` / `scene(node, viewport_id)` — host-side, `node` is the
+      device's Erlang node (atom). With no viewport id the single attached
+      viewport is used (`{:error, {:multiple_viewports, ids}}` otherwise).
+    * `scene(viewport_id, timeout \\\\ #{@scene_timeout})` — device-local.
+      Blocks the calling process for the round-trip (the reply rides the
+      next render tick).
+
+  Returns `{:ok, scene_map}` with string keys mirroring the wire encoding,
+  or an honest error (`{:no_viewport, id}` before the surface attaches,
+  `:timeout`, ...).
   """
-  @spec scene(String.t(), timeout()) :: {:ok, map()} | {:error, term()}
-  def scene(viewport_id, timeout \\ @scene_timeout) when is_binary(viewport_id) do
-    request_id = Base.encode16(:crypto.strong_rand_bytes(8))
+  @spec scene(node() | String.t(), String.t() | timeout()) :: {:ok, map()} | {:error, term()}
+  def scene(target, arg \\ @scene_timeout)
+
+  def scene(node, viewport_id) when is_atom(node) and is_binary(viewport_id),
+    do: rpc(node, :scene, [viewport_id])
+
+  def scene(node, _default_timeout) when is_atom(node) do
+    with {:ok, viewport_id} <- default_viewport(node), do: scene(node, viewport_id)
+  end
+
+  def scene(viewport_id, timeout) when is_binary(viewport_id) do
+    request_id = new_request_id()
 
     with {:ok, reply} <- Native.impl().request_scene(viewport_id, request_id),
          :ok <- Wire.decode_result(reply) do
-      await_scene(viewport_id, request_id, timeout)
+      await_reply(:scene3d_scene, viewport_id, request_id, timeout)
     end
   end
+
+  @doc """
+  Ray-pick the scene at viewport-local `{x, y}` (dp/pt, origin top-left) —
+  the same render-thread `View::pick` the `{tag, entity_id}` touch events
+  ride, so test-time picking and runtime picking cannot disagree. Filament's
+  pick is async (the GPU resolves a frame or two later); this call awaits
+  the resolution.
+
+  Only models with `pickable: true` participate. Returns `{:ok, entity_id}`
+  or the honest miss `{:error, {:no_entity_at_point, x, y}}` — a hit on a
+  non-pickable model and a hit on nothing are the same documented miss.
+
+    * `pick(node, x, y)` / `pick(node, viewport_id, x, y)` — host-side.
+    * `pick(viewport_id, x, y, timeout \\\\ #{@scene_timeout})` — device-local.
+  """
+  @spec pick(node() | String.t(), number(), number()) ::
+          {:ok, String.t()} | {:error, term()}
+  def pick(node, x, y) when is_atom(node) and is_number(x) and is_number(y) do
+    with {:ok, viewport_id} <- default_viewport(node), do: pick(node, viewport_id, x, y)
+  end
+
+  def pick(viewport_id, x, y) when is_binary(viewport_id) and is_number(x) and is_number(y),
+    do: pick(viewport_id, x, y, @scene_timeout)
+
+  @spec pick(node() | String.t(), String.t() | number(), number(), number() | timeout()) ::
+          {:ok, String.t()} | {:error, term()}
+  def pick(node, viewport_id, x, y)
+      when is_atom(node) and is_binary(viewport_id) and is_number(x) and is_number(y),
+      do: rpc(node, :pick, [viewport_id, x, y])
+
+  def pick(viewport_id, x, y, timeout)
+      when is_binary(viewport_id) and is_number(x) and is_number(y) do
+    request_id = new_request_id()
+    query = encode_query(%{"request_id" => request_id, "x" => x * 1.0, "y" => y * 1.0})
+
+    with {:ok, reply} <- Native.impl().pick(viewport_id, query),
+         :ok <- Wire.decode_result(reply),
+         {:ok, payload} <- await_reply(:scene3d_pick, viewport_id, request_id, timeout) do
+      decode_pick(payload, x, y)
+    end
+  end
+
+  @doc """
+  Sample the pixels the 3D viewport actually rendered — GPU readback via
+  Filament `readPixels` on the render thread. Window capture **cannot** see
+  the 3D surface (the SurfaceView blindspot, spike evidence), so this is the
+  pixel-truth primitive for 3D; the rect is viewport-local dp/pt
+  `{x, y, w, h}`, origin top-left.
+
+  Returns the same shape as `Mob.Test.sample_color/2` (it reduces through
+  `Mob.Test.reduce_rgba/3`): `{:ok, %{average: 0xAARRGGBB, dominant: _,
+  dominant_share: _, distinct: _, pixels: _}}`.
+
+  The readback is the displayed framebuffer: **post lighting, exposure and
+  tone mapping** — assert on `:dominant`/`:dominant_share` and compare with
+  tolerance, never bit-exact against IR base colors (see the pick +
+  introspection decision record). Rects clamp to the viewport;
+  `{:error, :offscreen}` when nothing overlaps. Payload is `w * h * scale²
+  * 4` bytes — probe-sized rects, not the full viewport.
+
+    * `sample_region(node, rect)` / `sample_region(node, viewport_id, rect)`
+    * `sample_region(viewport_id, rect, timeout \\\\ #{@scene_timeout})`
+  """
+  @spec sample_region(node() | String.t(), tuple() | String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def sample_region(node, {x, y, w, h}) when is_atom(node) do
+    with {:ok, viewport_id} <- default_viewport(node),
+         do: sample_region(node, viewport_id, {x, y, w, h})
+  end
+
+  def sample_region(viewport_id, {_x, _y, _w, _h} = rect) when is_binary(viewport_id),
+    do: sample_region(viewport_id, rect, @scene_timeout)
+
+  @spec sample_region(node() | String.t(), String.t() | tuple(), tuple() | timeout()) ::
+          {:ok, map()} | {:error, term()}
+  def sample_region(node, viewport_id, {x, y, w, h})
+      when is_atom(node) and is_binary(viewport_id),
+      do: rpc(node, :sample_region, [viewport_id, {x, y, w, h}])
+
+  def sample_region(viewport_id, {x, y, w, h}, timeout)
+      when is_binary(viewport_id) and is_number(x) and is_number(y) and is_number(w) and
+             is_number(h) do
+    request_id = new_request_id()
+
+    query =
+      encode_query(%{
+        "request_id" => request_id,
+        "x" => x * 1.0,
+        "y" => y * 1.0,
+        "w" => w * 1.0,
+        "h" => h * 1.0
+      })
+
+    with {:ok, reply} <- Native.impl().sample(viewport_id, query),
+         :ok <- Wire.decode_result(reply),
+         {:ok, payload} <- await_reply(:scene3d_sample, viewport_id, request_id, timeout) do
+      decode_sample(payload)
+    end
+  end
+
+  @doc """
+  Rendering performance as numbers, not vibes — read back from a ring
+  buffer the render thread fills (cheap: one delta per vsync tick).
+
+  Returns `{:ok, stats}`:
+
+    * `:frames` — frames rendered since the last `frame_stats` query
+    * `:avg_ms` / `:p95_ms` — rolling frame-to-frame time over the ring
+      buffer window (vsync-to-vsync, so an idle-but-healthy viewport reads
+      ~16.7 ms at 60 Hz)
+    * `:dropped` — frames since the last query whose delta exceeded 1.5×
+      the display's refresh period
+    * `:entities` — entities in the applier registry
+    * `:renderables` — renderable entities currently in the Filament scene
+
+    * `frame_stats(node)` / `frame_stats(node, viewport_id)` — host-side.
+    * `frame_stats(viewport_id, timeout \\\\ #{@scene_timeout})` — local.
+  """
+  @spec frame_stats(node() | String.t(), String.t() | timeout()) ::
+          {:ok, map()} | {:error, term()}
+  def frame_stats(target, arg \\ @scene_timeout)
+
+  def frame_stats(node, viewport_id) when is_atom(node) and is_binary(viewport_id),
+    do: rpc(node, :frame_stats, [viewport_id])
+
+  def frame_stats(node, _default_timeout) when is_atom(node) do
+    with {:ok, viewport_id} <- default_viewport(node), do: frame_stats(node, viewport_id)
+  end
+
+  def frame_stats(viewport_id, timeout) when is_binary(viewport_id) do
+    request_id = new_request_id()
+
+    with {:ok, reply} <- Native.impl().frame_stats(viewport_id, request_id),
+         :ok <- Wire.decode_result(reply),
+         {:ok, payload} <-
+           await_reply(:scene3d_frame_stats, viewport_id, request_id, timeout) do
+      decode_frame_stats(payload)
+    end
+  end
+
+  @doc """
+  The viewport ids with an attached native renderer. `viewports/0` is
+  device-local; `viewports/1` takes the device node.
+  """
+  @spec viewports() :: {:ok, [String.t()]} | {:error, term()}
+  def viewports do
+    with {:ok, reply} <- Native.impl().viewports() do
+      case Wire.decode!(reply) do
+        %{"viewports" => ids} when is_list(ids) -> {:ok, ids}
+        other -> {:error, {:bad_native_reply, other}}
+      end
+    end
+  end
+
+  @spec viewports(node()) :: {:ok, [String.t()]} | {:error, term()}
+  def viewports(node) when is_atom(node), do: rpc(node, :viewports, [])
 
   @doc """
   Destroy the native scene state for a viewport: registry, shadow, queued
@@ -197,11 +389,76 @@ defmodule Mob.Scene3d do
 
   defp resolve_op_assets(op), do: op
 
-  defp await_scene(viewport_id, request_id, timeout) do
+  # ── introspection plumbing ──────────────────────────────────────────────────
+
+  defp new_request_id, do: Base.encode16(:crypto.strong_rand_bytes(8))
+
+  defp encode_query(map), do: map |> :json.encode() |> IO.iodata_to_binary()
+
+  # Async replies are 4-tuples {tag, viewport, request, json}; anything not
+  # matching this exact request stays in the mailbox for its own awaiter.
+  defp await_reply(tag, viewport_id, request_id, timeout) do
     receive do
-      {:scene3d_scene, ^viewport_id, ^request_id, json} -> {:ok, Wire.decode!(json)}
+      {^tag, ^viewport_id, ^request_id, json} -> {:ok, Wire.decode!(json)}
     after
       timeout -> {:error, :timeout}
+    end
+  end
+
+  defp decode_pick(%{"entity" => id}, _x, _y) when is_binary(id), do: {:ok, id}
+  defp decode_pick(%{"miss" => true}, x, y), do: {:error, {:no_entity_at_point, x, y}}
+  defp decode_pick(%{"error" => reason}, _x, _y), do: {:error, Wire.decode_error(reason)}
+  defp decode_pick(other, _x, _y), do: {:error, {:bad_native_reply, other}}
+
+  defp decode_sample(%{"width" => w, "height" => h, "rgba" => b64})
+       when is_integer(w) and is_integer(h) and is_binary(b64) do
+    case Base.decode64(b64) do
+      # One reducer for 2D and 3D pixel truth: the exact stats shape
+      # Mob.Test.sample_color/2 returns, so parity assertions compare like
+      # with like.
+      {:ok, rgba} -> Mob.Test.reduce_rgba(rgba, w, h)
+      :error -> {:error, {:bad_native_reply, :rgba_base64}}
+    end
+  end
+
+  defp decode_sample(%{"error" => reason}), do: {:error, Wire.decode_error(reason)}
+  defp decode_sample(other), do: {:error, {:bad_native_reply, other}}
+
+  @frame_stat_keys ~w(frames avg_ms p95_ms dropped entities renderables)
+
+  defp decode_frame_stats(%{"error" => reason}), do: {:error, Wire.decode_error(reason)}
+
+  defp decode_frame_stats(payload) when is_map(payload) do
+    if Enum.all?(@frame_stat_keys, &is_number(payload[&1])) do
+      {:ok,
+       %{
+         frames: payload["frames"],
+         avg_ms: payload["avg_ms"],
+         p95_ms: payload["p95_ms"],
+         dropped: payload["dropped"],
+         entities: payload["entities"],
+         renderables: payload["renderables"]
+       }}
+    else
+      {:error, {:bad_native_reply, payload}}
+    end
+  end
+
+  defp decode_frame_stats(other), do: {:error, {:bad_native_reply, other}}
+
+  defp default_viewport(node) do
+    case viewports(node) do
+      {:ok, [viewport_id]} -> {:ok, viewport_id}
+      {:ok, []} -> {:error, :no_viewport}
+      {:ok, ids} -> {:error, {:multiple_viewports, ids}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp rpc(node, fun, args) do
+    case :rpc.call(node, __MODULE__, fun, args, @scene_timeout + @rpc_headroom) do
+      {:badrpc, reason} -> {:error, {:badrpc, reason}}
+      other -> other
     end
   end
 end

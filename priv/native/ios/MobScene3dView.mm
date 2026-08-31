@@ -50,7 +50,12 @@
 #include <utils/Entity.h>
 #include <utils/EntityManager.h>
 
+#include <backend/PixelBufferDescriptor.h>
+
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <map>
 #include <string>
@@ -95,6 +100,16 @@ NSString *kindOf(NSDictionary *entity) {
   return [kind isKindOfClass:[NSString class]] ? kind : @"group";
 }
 
+/// A JSON string literal (quotes included) for embedding in a reply.
+NSString *s3d_json_string(NSString *value) {
+  NSData *data = [NSJSONSerialization dataWithJSONObject:@[ value ]
+                                                 options:0
+                                                   error:nil];
+  NSString *array = [[NSString alloc] initWithData:data
+                                          encoding:NSUTF8StringEncoding];
+  return [array substringWithRange:NSMakeRange(1, array.length - 2)];
+}
+
 } // namespace
 
 @interface MobScene3dView () {
@@ -119,6 +134,19 @@ NSString *kindOf(NSDictionary *entity) {
   NSUInteger _frameCount;
   BOOL _readySent;
   BOOL _destroyed;
+
+  // Sample queries wait for a frame we actually render: readPixels must sit
+  // between render() and endFrame() to read the swap chain.
+  NSMutableArray<NSDictionary *> *_pendingSamples;
+
+  // Frame timing ring buffer — one delta per CADisplayLink tick, cheap by
+  // construction. 120 entries ≈ the last two seconds at 60 Hz.
+  double _frameDeltasMs[120];
+  int _frameDeltaCount;
+  int _frameDeltaIndex;
+  CFTimeInterval _lastFrameTimestamp;
+  NSUInteger _framesSinceQuery;
+  NSUInteger _droppedSinceQuery;
 }
 @property(nonatomic, strong, nullable) CADisplayLink *displayLink;
 @property(nonatomic, copy) NSString *viewportId;
@@ -134,7 +162,15 @@ NSString *kindOf(NSDictionary *entity) {
   self = [super initWithFrame:frame];
   if (self) {
     _viewportId = [viewportId copy];
+    _pendingSamples = [NSMutableArray array];
     self.contentScaleFactor = UIScreen.mainScreen.scale;
+    // Tap capture: a single tap inside the viewport rides the same native
+    // pick path pick/3 uses. Hits on pickable models become pick events;
+    // misses are silence (the decision record's honest-miss ruling).
+    UITapGestureRecognizer *tap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(handleTap:)];
+    [self addGestureRecognizer:tap];
     [self setupFilament];
     [[NSNotificationCenter defaultCenter]
         addObserver:self
@@ -245,6 +281,7 @@ NSString *kindOf(NSDictionary *entity) {
 - (void)renderFrame {
   if (_destroyed)
     return;
+  [self recordFrameDelta];
 
   MobScene3dDrain *drain = MobScene3dDrainTick(self.viewportId);
   if (drain.reset)
@@ -254,18 +291,218 @@ NSString *kindOf(NSDictionary *entity) {
     MobScene3dDeliverScene(request[@"token"], self.viewportId,
                            request[@"request_id"], [self sceneJson]);
   }
+  for (NSDictionary *query in drain.queries) {
+    NSString *kind = query[@"kind"];
+    if ([kind isEqualToString:@"pick"]) {
+      NSDictionary *params = query[@"params"];
+      CGFloat scale = self.contentScaleFactor;
+      [self pickAtPixelX:jnum(params[@"x"], 0.0) * scale
+                       y:jnum(params[@"y"], 0.0) * scale
+                   query:query];
+    } else if ([kind isEqualToString:@"sample"]) {
+      [_pendingSamples addObject:query];
+    } else if ([kind isEqualToString:@"stats"]) {
+      [self deliverFrameStats:query];
+    }
+  }
 
   if (_swapChain == nullptr)
     return;
   if (_renderer->beginFrame(_swapChain)) {
     _renderer->render(_view);
+    // GPU readback rides between render() and endFrame(): that is the
+    // window where the swap chain is readable. Window capture cannot see
+    // this surface at all (the SurfaceView/CAMetalLayer blindspot) — this
+    // IS the pixel-truth path.
+    for (NSDictionary *query in _pendingSamples)
+      [self readbackSample:query];
+    [_pendingSamples removeAllObjects];
     _renderer->endFrame();
     _frameCount++;
+    _framesSinceQuery++;
     if (!_readySent) {
       _readySent = YES;
       MobScene3dDeliverReady(self.viewportId);
     }
   }
+}
+
+// ── input: tap → ray pick → {tag, entity} event (bead na8) ────────────────
+
+- (void)handleTap:(UITapGestureRecognizer *)recognizer {
+  if (recognizer.state != UIGestureRecognizerStateEnded)
+    return;
+  CGPoint point = [recognizer locationInView:self];
+  CGFloat scale = self.contentScaleFactor;
+  [self pickAtPixelX:point.x * scale y:point.y * scale query:nil];
+}
+
+/// Ray-pick at viewport pixel coords. `query == nil` is the touch path
+/// (hit → pick event to the owner; miss → silence). A query gets an
+/// explicit reply either way. Filament picks async on the GPU; the callback
+/// fires a frame or two later on Filament's dispatch — it touches only the
+/// captured snapshot and enif_send (thread-safe), never Filament state.
+- (void)pickAtPixelX:(double)xPx y:(double)yPx query:(NSDictionary *)query {
+  const Viewport &vp = _view->getViewport();
+  // Filament pick coords: viewport pixels, origin bottom-left.
+  uint32_t px = (uint32_t)std::max(0.0, std::round(xPx));
+  uint32_t flippedY = 0;
+  double fromBottom = (double)vp.height - std::round(yPx);
+  if (fromBottom > 0)
+    flippedY = (uint32_t)fromBottom;
+
+  // Snapshot of pickable renderables → IR ids, resolved in the callback.
+  NSMutableDictionary<NSNumber *, NSString *> *pickables =
+      [NSMutableDictionary dictionary];
+  for (auto &pair : _registry) {
+    S3dRec &rec = pair.second;
+    if (rec.instance == nullptr)
+      continue;
+    id pickable = rec.json[@"pickable"];
+    if (jnull(pickable) || ![pickable boolValue])
+      continue;
+    const utils::Entity *entities = rec.instance->getEntities();
+    size_t count = rec.instance->getEntityCount();
+    NSString *irId = @(pair.first.c_str());
+    for (size_t i = 0; i < count; i++) {
+      pickables[@(entities[i].getId())] = irId;
+    }
+  }
+
+  NSString *viewportId = self.viewportId;
+  NSData *token = query ? query[@"token"] : nil;
+  NSString *requestId = query ? query[@"request_id"] : nil;
+  _view->pick(px, flippedY,
+              [pickables, viewportId, token,
+               requestId](filament::View::PickingQueryResult const &result) {
+                NSString *entityId = pickables[@(result.renderable.getId())];
+                if (token != nil) {
+                  NSString *reply =
+                      entityId != nil
+                          ? [NSString stringWithFormat:@"{\"entity\":%@}",
+                                                       s3d_json_string(
+                                                           entityId)]
+                          : @"{\"miss\":true}";
+                  MobScene3dDeliverReply(@"pick", token, viewportId, requestId,
+                                         reply);
+                } else if (entityId != nil) {
+                  MobScene3dDeliverPickEvent(viewportId, entityId);
+                }
+              });
+}
+
+// ── pixel truth: Filament readPixels over a viewport-local pt rect ────────
+
+struct S3dSampleCtx {
+  const void *token;     // NSData, CFBridgingRetained
+  const void *viewport;  // NSString
+  const void *requestId; // NSString
+  int width;
+  int height;
+};
+
+static void s3d_sample_done(void *buffer, size_t size, void *user) {
+  S3dSampleCtx *ctx = (S3dSampleCtx *)user;
+  NSData *token = CFBridgingRelease(ctx->token);
+  NSString *viewportId = CFBridgingRelease(ctx->viewport);
+  NSString *requestId = CFBridgingRelease(ctx->requestId);
+  NSData *rgba = [NSData dataWithBytesNoCopy:buffer
+                                      length:size
+                                freeWhenDone:NO];
+  NSString *reply = [NSString
+      stringWithFormat:@"{\"width\":%d,\"height\":%d,\"rgba\":\"%@\"}",
+                       ctx->width, ctx->height,
+                       [rgba base64EncodedStringWithOptions:0]];
+  MobScene3dDeliverReply(@"sample", token, viewportId, requestId, reply);
+  free(buffer);
+  delete ctx;
+}
+
+- (void)readbackSample:(NSDictionary *)query {
+  NSDictionary *params = query[@"params"];
+  const Viewport &vp = _view->getViewport();
+  CGFloat scale = self.contentScaleFactor;
+  // pt rect → device pixels, clamped to the viewport.
+  double x = jnum(params[@"x"], 0.0) * scale;
+  double y = jnum(params[@"y"], 0.0) * scale;
+  double w = jnum(params[@"w"], 0.0) * scale;
+  double h = jnum(params[@"h"], 0.0) * scale;
+  int32_t x0 = (int32_t)std::clamp(std::round(x), 0.0, (double)vp.width);
+  int32_t y0 = (int32_t)std::clamp(std::round(y), 0.0, (double)vp.height);
+  int32_t x1 = (int32_t)std::clamp(std::round(x + w), 0.0, (double)vp.width);
+  int32_t y1 = (int32_t)std::clamp(std::round(y + h), 0.0, (double)vp.height);
+  int32_t width = x1 - x0;
+  int32_t height = y1 - y0;
+  if (width <= 0 || height <= 0) {
+    MobScene3dDeliverReply(@"sample", query[@"token"], self.viewportId,
+                           query[@"request_id"],
+                           @"{\"error\":[\"offscreen\"]}");
+    return;
+  }
+
+  // readPixels origin is bottom-left (GL convention); rows arrive
+  // bottom-to-top, which the order-invariant stats reduction ignores.
+  uint32_t glY = vp.height - (uint32_t)(y0 + height);
+  size_t bufferSize = (size_t)width * (size_t)height * 4;
+  void *buffer = malloc(bufferSize);
+  if (buffer == nullptr) {
+    MobScene3dDeliverReply(@"sample", query[@"token"], self.viewportId,
+                           query[@"request_id"],
+                           @"{\"error\":[\"empty_region\"]}");
+    return;
+  }
+  S3dSampleCtx *ctx = new S3dSampleCtx{
+      CFBridgingRetain(query[@"token"]), CFBridgingRetain(self.viewportId),
+      CFBridgingRetain(query[@"request_id"]), width, height};
+  backend::PixelBufferDescriptor descriptor(
+      buffer, bufferSize, backend::PixelDataFormat::RGBA,
+      backend::PixelDataType::UBYTE, s3d_sample_done, ctx);
+  _renderer->readPixels((uint32_t)x0, glY, (uint32_t)width, (uint32_t)height,
+                        std::move(descriptor));
+}
+
+// ── perf readback: ring buffer of vsync deltas (bead 0n7 scope note) ──────
+
+- (void)recordFrameDelta {
+  CFTimeInterval now = self.displayLink.timestamp;
+  if (_lastFrameTimestamp > 0) {
+    double deltaMs = (now - _lastFrameTimestamp) * 1000.0;
+    _frameDeltasMs[_frameDeltaIndex] = deltaMs;
+    _frameDeltaIndex = (_frameDeltaIndex + 1) % 120;
+    if (_frameDeltaCount < 120)
+      _frameDeltaCount++;
+    double periodMs = self.displayLink.duration > 0
+                          ? self.displayLink.duration * 1000.0
+                          : 1000.0 / 60.0;
+    if (deltaMs > 1.5 * periodMs)
+      _droppedSinceQuery++;
+  }
+  _lastFrameTimestamp = now;
+}
+
+- (void)deliverFrameStats:(NSDictionary *)query {
+  std::vector<double> window(_frameDeltasMs, _frameDeltasMs + _frameDeltaCount);
+  std::sort(window.begin(), window.end());
+  double avg = 0.0;
+  double p95 = 0.0;
+  if (!window.empty()) {
+    for (double delta : window)
+      avg += delta;
+    avg /= (double)window.size();
+    size_t index = ((window.size() - 1) * 95 + 99) / 100;
+    p95 = window[std::min(index, window.size() - 1)];
+  }
+  size_t renderables = _scene->getRenderableCount();
+  NSString *reply = [NSString
+      stringWithFormat:@"{\"frames\":%lu,\"avg_ms\":%.3f,\"p95_ms\":%.3f,"
+                       @"\"dropped\":%lu,\"entities\":%zu,\"renderables\":%zu}",
+                       (unsigned long)_framesSinceQuery, avg, p95,
+                       (unsigned long)_droppedSinceQuery, _registry.size(),
+                       renderables];
+  _framesSinceQuery = 0;
+  _droppedSinceQuery = 0;
+  MobScene3dDeliverReply(@"stats", query[@"token"], self.viewportId,
+                         query[@"request_id"], reply);
 }
 
 // ── the applier: patch ops → Filament mutations (the mapping table) ──────
@@ -304,7 +541,8 @@ NSString *kindOf(NSDictionary *entity) {
     [self setEntityField:op[1] field:@"visible" value:op[2]];
     [self applyVisibility:op[1]];
   } else if ([name isEqualToString:@"set_pickable"]) {
-    // Picking is a later bead (mob_scene3d-na8); readback reflects intent.
+    // The registry json is what pick resolution snapshots (pickAtPixelX),
+    // so flipping the flag takes effect on the next tap/pick.
     [self setEntityField:op[1] field:@"pickable" value:op[2]];
   } else if ([name isEqualToString:@"set_material"]) {
     [self setMaterial:op[1] material:op[2]];

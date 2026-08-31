@@ -28,6 +28,10 @@ var g_caps: jni.JMethodID = null;
 var g_apply: jni.JMethodID = null;
 var g_scene: jni.JMethodID = null;
 var g_destroy: jni.JMethodID = null;
+var g_pick: jni.JMethodID = null;
+var g_sample: jni.JMethodID = null;
+var g_stats: jni.JMethodID = null;
+var g_viewports: jni.JMethodID = null;
 
 export fn Java_io_mob_scene3d_MobScene3dBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jni.JClass) callconv(.c) void {
     g_cls = jni.newGlobalRef(jenv, cls);
@@ -36,6 +40,10 @@ export fn Java_io_mob_scene3d_MobScene3dBridge_nativeRegister(jenv: *jni.JNIEnv,
     g_apply = jni.getStaticMethodID(jenv, cls, "scene3dApply", "(J[B[B)[B");
     g_scene = jni.getStaticMethodID(jenv, cls, "scene3dScene", "(J[B[B)[B");
     g_destroy = jni.getStaticMethodID(jenv, cls, "scene3dDestroy", "([B)[B");
+    g_pick = jni.getStaticMethodID(jenv, cls, "scene3dPick", "(J[B[B)[B");
+    g_sample = jni.getStaticMethodID(jenv, cls, "scene3dSample", "(J[B[B)[B");
+    g_stats = jni.getStaticMethodID(jenv, cls, "scene3dFrameStats", "(J[B[B)[B");
+    g_viewports = jni.getStaticMethodID(jenv, cls, "scene3dViewports", "()[B");
 }
 
 // ── Marshalling helpers ────────────────────────────────────────────────────
@@ -144,6 +152,35 @@ fn nif_scene3d_scene(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL
     return callPidTwoBins(env, g_scene, argv);
 }
 
+fn nif_scene3d_pick(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    return callPidTwoBins(env, g_pick, argv);
+}
+
+fn nif_scene3d_sample(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    return callPidTwoBins(env, g_sample, argv);
+}
+
+fn nif_scene3d_frame_stats(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    return callPidTwoBins(env, g_stats, argv);
+}
+
+fn nif_scene3d_viewports(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
+    _ = argc;
+    _ = argv;
+    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    var attached: c_int = 0;
+    const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
+    defer detachIfAttached(attached);
+    const result = jenv.*.CallStaticObjectMethod.?(jenv, g_cls, g_viewports);
+    jni.exceptionClear(jenv);
+    if (result == null) return literalBinary(env, bridge_call_failed);
+    defer jni.deleteLocalRef(jenv, result);
+    return byteArrayToTerm(env, jenv, result) orelse literalBinary(env, bridge_call_failed);
+}
+
 fn nif_scene3d_destroy(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     if (g_cls == null) return literalBinary(env, bridge_unregistered);
@@ -162,8 +199,12 @@ fn nif_scene3d_destroy(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.E
 }
 
 // ── Inbound delivery — Kotlin calls this from the main thread ──────────────
-// kind = "scene": {:scene3d_scene, Viewport, A, B}   (A=request id, B=json)
-// kind = "error": {:scene3d_error, Viewport, A}      (A=error json)
+// kind = "scene": {:scene3d_scene, Viewport, A, B}       (A=request id, B=json)
+// kind = "pick":  {:scene3d_pick, Viewport, A, B}        (A=request id, B=json)
+// kind = "sample": {:scene3d_sample, Viewport, A, B}     (A=request id, B=json)
+// kind = "stats": {:scene3d_frame_stats, Viewport, A, B} (A=request id, B=json)
+// kind = "pick_event": {:scene3d_pick_event, Viewport, A} (A=entity id)
+// kind = "error": {:scene3d_error, Viewport, A}          (A=error json)
 // kind = "ready": {:scene3d_ready, Viewport}
 export fn Java_io_mob_scene3d_MobScene3dBridge_nativeDeliverScene3d(
     jenv: *jni.JNIEnv,
@@ -190,6 +231,21 @@ export fn Java_io_mob_scene3d_MobScene3dBridge_nativeDeliverScene3d(
         const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
         const b_term = stringToBinaryTerm(env, jenv, b) orelse return;
         break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_scene"), vid_term, a_term, b_term });
+    } else if (std.mem.eql(u8, kind_s, "pick")) blk: {
+        const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
+        const b_term = stringToBinaryTerm(env, jenv, b) orelse return;
+        break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_pick"), vid_term, a_term, b_term });
+    } else if (std.mem.eql(u8, kind_s, "sample")) blk: {
+        const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
+        const b_term = stringToBinaryTerm(env, jenv, b) orelse return;
+        break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_sample"), vid_term, a_term, b_term });
+    } else if (std.mem.eql(u8, kind_s, "stats")) blk: {
+        const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
+        const b_term = stringToBinaryTerm(env, jenv, b) orelse return;
+        break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_frame_stats"), vid_term, a_term, b_term });
+    } else if (std.mem.eql(u8, kind_s, "pick_event")) blk: {
+        const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
+        break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_pick_event"), vid_term, a_term });
     } else if (std.mem.eql(u8, kind_s, "error")) blk: {
         const a_term = stringToBinaryTerm(env, jenv, a) orelse return;
         break :blk erts.makeTuple(env, .{ erts.atom(env, "scene3d_error"), vid_term, a_term });
@@ -227,6 +283,10 @@ const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "scene3d_apply", .arity = 2, .fptr = nif_scene3d_apply, .flags = 0 },
     .{ .name = "scene3d_scene", .arity = 2, .fptr = nif_scene3d_scene, .flags = 0 },
     .{ .name = "scene3d_destroy", .arity = 1, .fptr = nif_scene3d_destroy, .flags = 0 },
+    .{ .name = "scene3d_pick", .arity = 2, .fptr = nif_scene3d_pick, .flags = 0 },
+    .{ .name = "scene3d_sample", .arity = 2, .fptr = nif_scene3d_sample, .flags = 0 },
+    .{ .name = "scene3d_frame_stats", .arity = 2, .fptr = nif_scene3d_frame_stats, .flags = 0 },
+    .{ .name = "scene3d_viewports", .arity = 0, .fptr = nif_scene3d_viewports, .flags = 0 },
 };
 
 var nif_entry: erts.ErlNifEntry = .{

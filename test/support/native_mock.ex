@@ -55,12 +55,7 @@ defmodule Mob.Scene3d.NativeMock do
   @impl true
   def request_scene(viewport_id, request_id) do
     record({:request_scene, viewport_id, request_id})
-
-    case Process.get(@script, %{}) do
-      %{request_scene: fun} when is_function(fun, 2) -> fun.(viewport_id, request_id)
-      %{request_scene: reply} -> reply
-      _script -> {:ok, ~s({"ok":true})}
-    end
+    scripted_call(:request_scene, [viewport_id, request_id], {:ok, ~s({"ok":true})})
   end
 
   @impl true
@@ -69,7 +64,41 @@ defmodule Mob.Scene3d.NativeMock do
     scripted(:destroy, {:ok, ~s({"ok":true})})
   end
 
+  @impl true
+  def pick(viewport_id, query_json) do
+    record({:pick, viewport_id, query_json})
+    scripted_call(:pick, [viewport_id, query_json], {:ok, ~s({"ok":true})})
+  end
+
+  @impl true
+  def sample(viewport_id, query_json) do
+    record({:sample, viewport_id, query_json})
+    scripted_call(:sample, [viewport_id, query_json], {:ok, ~s({"ok":true})})
+  end
+
+  @impl true
+  def frame_stats(viewport_id, request_id) do
+    record({:frame_stats, viewport_id, request_id})
+    scripted_call(:frame_stats, [viewport_id, request_id], {:ok, ~s({"ok":true})})
+  end
+
+  @impl true
+  def viewports do
+    record({:viewports})
+    scripted(:viewports, {:ok, ~s({"viewports":[]})})
+  end
+
   defp record(call), do: Process.put(@calls, [call | Process.get(@calls, [])])
 
   defp scripted(fun, default), do: Process.get(@script, %{}) |> Map.get(fun, default)
+
+  # Two-arg NIF entries accept function scripts (called with the NIF args in
+  # the caller's process, so they can send(self(), ...) the async reply).
+  defp scripted_call(fun, args, default) do
+    case Process.get(@script, %{}) do
+      %{^fun => script} when is_function(script, 2) -> apply(script, args)
+      %{^fun => reply} -> reply
+      _script -> default
+    end
+  end
 end

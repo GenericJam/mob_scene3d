@@ -33,6 +33,8 @@ defmodule Mob.Scene3d.Viewport do
         viewport_id: viewport_id,
         width: props[:width] || 340,
         height: props[:height] || 420,
+        pick_tag: props[:on_pick] || :pick,
+        screen_pid: props[:screen_pid],
         committed: IR.empty()
       )
 
@@ -44,7 +46,9 @@ defmodule Mob.Scene3d.Viewport do
     socket =
       Mob.Socket.assign(socket,
         width: props[:width] || socket.assigns.width,
-        height: props[:height] || socket.assigns.height
+        height: props[:height] || socket.assigns.height,
+        pick_tag: props[:on_pick] || socket.assigns.pick_tag,
+        screen_pid: props[:screen_pid] || socket.assigns.screen_pid
       )
 
     {:ok, commit(socket, props[:ir])}
@@ -62,9 +66,22 @@ defmodule Mob.Scene3d.Viewport do
   @impl true
   def handle_info(message, socket) do
     # Async native events (asset load failures after a structurally-valid
-    # patch applied, surface attach notices) land here because this process
-    # made the NIF calls. Nothing is swallowed silently.
+    # patch applied, surface attach notices, resolved picks) land here
+    # because this process made the NIF calls. Nothing is swallowed silently.
     case message do
+      {:scene3d_pick_event, _viewport_id, entity_id} ->
+        # Native only delivers hits on pickable models (misses are silence,
+        # per the pick decision addendum); re-tag with the screen's
+        # configured on_pick and forward — the screen's handle_info/2 sees
+        # {tag, entity_id}, matching mob's tap event grammar.
+        case socket.assigns do
+          %{screen_pid: screen_pid, pick_tag: tag} when is_pid(screen_pid) ->
+            send(screen_pid, {tag, entity_id})
+
+          _assigns ->
+            Logger.warning("[scene3d] pick event with no owning screen: #{inspect(entity_id)}")
+        end
+
       {:scene3d_error, viewport_id, error} ->
         Logger.error("[scene3d] viewport #{viewport_id}: #{inspect(error)}")
 

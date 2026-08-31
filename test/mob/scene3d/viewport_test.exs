@@ -75,6 +75,41 @@ defmodule Mob.Scene3d.ViewportTest do
     assert {:destroy, "board"} in NativeMock.calls()
   end
 
+  test "a native pick event is re-tagged and forwarded to the owning screen" do
+    socket = mounted(%{id: :board, on_pick: :piece_picked, screen_pid: self()})
+
+    {:noreply, _socket} =
+      Viewport.handle_info({:scene3d_pick_event, "board", "pawn_red_2"}, socket)
+
+    assert_received {:piece_picked, "pawn_red_2"}
+  end
+
+  test "the pick tag defaults to :pick" do
+    socket = mounted(%{id: :board, screen_pid: self()})
+    {:noreply, _socket} = Viewport.handle_info({:scene3d_pick_event, "board", "probe"}, socket)
+
+    assert_received {:pick, "probe"}
+  end
+
+  test "a pick event with no screen pid logs instead of crashing" do
+    socket = mounted(%{id: :board})
+
+    log =
+      capture_log(fn ->
+        {:noreply, _socket} =
+          Viewport.handle_info({:scene3d_pick_event, "board", "probe"}, socket)
+      end)
+
+    assert log =~ "no owning screen"
+    refute_received {:pick, _id}
+  end
+
+  test "Mob.Scene3d.viewport/1 refuses a non-atom on_pick tag" do
+    assert_raise ArgumentError, ~r/on_pick must be an atom/, fn ->
+      Mob.Scene3d.viewport(id: :board, on_pick: "strings_leak")
+    end
+  end
+
   test "async native errors are logged, never swallowed" do
     socket = mounted(%{id: :board})
 
