@@ -1,0 +1,6 @@
+# ktlint configuration for the plugin's Kotlin sources.
+#
+# function-naming: @Composable factories are PascalCase by Compose
+# convention (MobScene3dViewport); everything else stays camelCase.
+[*.kt]
+ktlint_function_naming_ignore_when_annotated_with = Composable
