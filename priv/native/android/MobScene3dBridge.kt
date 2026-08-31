@@ -1,0 +1,1166 @@
+// mob_scene3d plugin — Android bridge: NIF wire + Filament scene applier.
+//
+// Three layers, one file (the plugin manifest ships a single bridge_kt):
+//
+//  * MobScene3dBridge — JNI seam. The zig NIF (mob_scene3d_nif.zig) calls the
+//    scene3d* statics from BEAM scheduler threads; async traffic flows back
+//    through nativeDeliverScene3d (enif_send in the zig thunk).
+//  * Scene3dRuntime — the shadow registry. Validates every patch atomically
+//    (reject-all, the honest-error taxonomy from the scene-IR decision
+//    record) against pure bookkeeping state, synchronously on the calling
+//    thread — NO Filament here. Validated ops queue for the renderer; the
+//    full shadow can bootstrap a (re)attached renderer at any time.
+//  * Scene3dView — the Filament applier + surface/lifecycle shim.
+//    SurfaceView + UiHelper + Choreographer; the Engine is created on the
+//    main thread and every Filament call stays there (the spike's binding
+//    threading contract). Ops apply between frames.
+//
+// Host wiring (documented in the manifest host_requirements): the app
+// registers the composable once, e.g. in MainActivity.onCreate after
+// MobPluginBootstrap.registerAll:
+//
+//   MobNativeViewRegistry.register("Mob_Scene3d_Viewport") { props, _send ->
+//       io.mob.scene3d.MobScene3dViewport(props)
+//   }
+package io.mob.scene3d
+
+import android.content.Context
+import android.view.Choreographer
+import android.view.Surface
+import android.view.SurfaceView
+import android.view.View.VISIBLE
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.google.android.filament.Camera
+import com.google.android.filament.Engine
+import com.google.android.filament.EntityManager
+import com.google.android.filament.LightManager
+import com.google.android.filament.Renderer
+import com.google.android.filament.Scene
+import com.google.android.filament.Skybox
+import com.google.android.filament.SwapChain
+import com.google.android.filament.View
+import com.google.android.filament.Viewport
+import com.google.android.filament.android.UiHelper
+import com.google.android.filament.gltfio.AssetLoader
+import com.google.android.filament.gltfio.FilamentAsset
+import com.google.android.filament.gltfio.FilamentInstance
+import com.google.android.filament.gltfio.ResourceLoader
+import com.google.android.filament.gltfio.UbershaderProvider
+import com.google.android.filament.utils.Utils
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
+object MobScene3dBridge {
+    @JvmStatic external fun nativeRegister()
+
+    // kind = "scene" (a=requestId, b=sceneJson) | "error" (a=errorJson) | "ready"
+    @JvmStatic external fun nativeDeliverScene3d(
+        pid: Long,
+        kind: String,
+        viewportId: String,
+        a: String,
+        b: String,
+    )
+
+    @JvmStatic
+    fun register() {
+        Utils.init() // loads libfilament-jni / libgltfio-jni / libfilament-utils-jni
+        nativeRegister()
+    }
+
+    // ── NIF entry points (BEAM scheduler threads — bookkeeping only) ──────
+
+    @JvmStatic
+    fun scene3dCaps(): ByteArray = Scene3dRuntime.capsJson().toByteArray(Charsets.UTF_8)
+
+    @JvmStatic
+    fun scene3dApply(
+        pid: Long,
+        viewportId: ByteArray,
+        patch: ByteArray,
+    ): ByteArray =
+        Scene3dRuntime
+            .apply(pid, String(viewportId, Charsets.UTF_8), String(patch, Charsets.UTF_8))
+            .toByteArray(Charsets.UTF_8)
+
+    @JvmStatic
+    fun scene3dScene(
+        pid: Long,
+        viewportId: ByteArray,
+        requestId: ByteArray,
+    ): ByteArray =
+        Scene3dRuntime
+            .requestScene(pid, String(viewportId, Charsets.UTF_8), String(requestId, Charsets.UTF_8))
+            .toByteArray(Charsets.UTF_8)
+
+    @JvmStatic
+    fun scene3dDestroy(viewportId: ByteArray): ByteArray =
+        Scene3dRuntime.destroy(String(viewportId, Charsets.UTF_8)).toByteArray(Charsets.UTF_8)
+}
+
+// ── Shadow registry + patch validation ─────────────────────────────────────
+
+object Scene3dRuntime {
+    private const val SCHEMA = 1
+
+    // set_animation deliberately absent: animation playback is a later bead;
+    // the Elixir caps guard refuses it loudly before it ever reaches a wire.
+    private val SUPPORTED_OPS =
+        listOf(
+            "add_entity",
+            "replace_entity",
+            "remove_entity",
+            "set_parent",
+            "set_transform",
+            "set_visible",
+            "set_pickable",
+            "set_material",
+            "set_camera",
+            "set_light",
+            "set_environment",
+        )
+
+    class ViewportState {
+        // Insertion-ordered so bootstrap replay is parents-first for free
+        // (diff order guarantees parents precede children on first add, and
+        // replays re-add in commit order).
+        val shadow = LinkedHashMap<String, JSONObject>()
+        val pendingOps = ArrayList<JSONArray>()
+        val sceneRequests = ArrayList<Pair<Long, String>>()
+        var ownerPid: Long = 0
+        var view: Scene3dView? = null
+        var resetRequested = false
+    }
+
+    private val lock = Any()
+    private val viewports = HashMap<String, ViewportState>()
+
+    fun capsJson(): String {
+        val ops = JSONArray()
+        SUPPORTED_OPS.forEach { ops.put(it) }
+        return JSONObject().put("schema", SCHEMA).put("ops", ops).toString()
+    }
+
+    fun apply(
+        pid: Long,
+        viewportId: String,
+        patchJson: String,
+    ): String {
+        val envelope =
+            try {
+                JSONObject(patchJson)
+            } catch (e: Exception) {
+                return err("bad_patch", e.message ?: "parse")
+            }
+        if (envelope.optInt("schema", -1) != SCHEMA) return err("bad_patch", "schema")
+        val ops = envelope.optJSONArray("ops") ?: return err("bad_patch", "ops")
+
+        synchronized(lock) {
+            val state = viewports.getOrPut(viewportId) { ViewportState() }
+            state.ownerPid = pid
+            // Dry-run the whole patch against a working copy: atomic
+            // reject-all before anything is queued for Filament.
+            val work = LinkedHashMap(state.shadow)
+            for (i in 0 until ops.length()) {
+                val op = ops.optJSONArray(i) ?: return err("bad_patch", "op $i")
+                val failure = Scene3dShadow.applyOp(work, op)
+                if (failure != null) return JSONObject().put("error", failure).toString()
+            }
+            val invalid = Scene3dShadow.validateResult(work)
+            if (invalid != null) return JSONObject().put("error", invalid).toString()
+
+            state.shadow.clear()
+            state.shadow.putAll(work)
+            for (i in 0 until ops.length()) state.pendingOps.add(ops.getJSONArray(i))
+        }
+        return OK
+    }
+
+    fun requestScene(
+        pid: Long,
+        viewportId: String,
+        requestId: String,
+    ): String {
+        synchronized(lock) {
+            val state = viewports[viewportId]
+            if (state?.view == null) return err("no_viewport", viewportId)
+            state.sceneRequests.add(pid to requestId)
+        }
+        return OK
+    }
+
+    fun destroy(viewportId: String): String {
+        synchronized(lock) {
+            val state = viewports[viewportId] ?: return OK
+            state.shadow.clear()
+            state.pendingOps.clear()
+            state.sceneRequests.clear()
+            state.resetRequested = true
+        }
+        return OK
+    }
+
+    // ── renderer side (main thread) ────────────────────────────────────────
+
+    /** Attach a renderer; returns bootstrap ops replaying the shadow. */
+    fun attach(
+        viewportId: String,
+        view: Scene3dView,
+    ): List<JSONArray> {
+        synchronized(lock) {
+            val state = viewports.getOrPut(viewportId) { ViewportState() }
+            state.view = view
+            state.resetRequested = false
+            // The renderer starts empty: pending deltas are subsumed by the
+            // shadow replay.
+            state.pendingOps.clear()
+            return state.shadow.values.map { entity ->
+                JSONArray().put("add_entity").put(entity)
+            }
+        }
+    }
+
+    fun detach(
+        viewportId: String,
+        view: Scene3dView,
+    ) {
+        synchronized(lock) {
+            val state = viewports[viewportId] ?: return
+            if (state.view === view) state.view = null
+        }
+    }
+
+    class Drained(
+        val ops: List<JSONArray>,
+        val sceneRequests: List<Pair<Long, String>>,
+        val reset: Boolean,
+        val ownerPid: Long,
+    )
+
+    fun drain(viewportId: String): Drained {
+        synchronized(lock) {
+            val state = viewports[viewportId] ?: return Drained(emptyList(), emptyList(), false, 0)
+            val ops = ArrayList(state.pendingOps)
+            state.pendingOps.clear()
+            val requests = ArrayList(state.sceneRequests)
+            state.sceneRequests.clear()
+            val reset = state.resetRequested
+            state.resetRequested = false
+            return Drained(ops, requests, reset, state.ownerPid)
+        }
+    }
+
+    fun ownerPid(viewportId: String): Long = synchronized(lock) { viewports[viewportId]?.ownerPid ?: 0 }
+
+    private const val OK = "{\"ok\":true}"
+
+    private fun err(vararg args: String): String {
+        val arr = JSONArray()
+        args.forEach { arr.put(it) }
+        return JSONObject().put("error", arr).toString()
+    }
+}
+
+// Pure patch semantics against the shadow map — mirrors Mob.Scene3d.IR.Patch
+// (the executable Elixir reference); the parity harness bead (zn8) checks
+// cross-platform agreement.
+object Scene3dShadow {
+    /** Applies one op to `work`, returning an error JSONArray or null. */
+    fun applyOp(
+        work: LinkedHashMap<String, JSONObject>,
+        op: JSONArray,
+    ): JSONArray? {
+        return when (val name = op.optString(0)) {
+            "add_entity" -> {
+                val entity = op.optJSONObject(1) ?: return err("bad_patch", "add_entity")
+                val id = entity.optString("id")
+                val parent = entity.optString("parent", "").ifEmpty { null }
+                when {
+                    work.containsKey(id) -> {
+                        err("duplicate_entity", id)
+                    }
+
+                    parent != null && !work.containsKey(parent) -> {
+                        err("unknown_parent", id, parent)
+                    }
+
+                    hasAnimation(entity) -> {
+                        err("unsupported", "animation")
+                    }
+
+                    else -> {
+                        work[id] = entity
+                        null
+                    }
+                }
+            }
+
+            "replace_entity" -> {
+                val entity = op.optJSONObject(1) ?: return err("bad_patch", "replace_entity")
+                val id = entity.optString("id")
+                val parent = entity.optString("parent", "").ifEmpty { null }
+                when {
+                    !work.containsKey(id) -> {
+                        err("unknown_entity", id)
+                    }
+
+                    parent != null && !work.containsKey(parent) -> {
+                        err("unknown_parent", id, parent)
+                    }
+
+                    hasAnimation(entity) -> {
+                        err("unsupported", "animation")
+                    }
+
+                    else -> {
+                        work[id] = entity
+                        null
+                    }
+                }
+            }
+
+            "remove_entity" -> {
+                val id = op.optString(1)
+                when {
+                    !work.containsKey(id) -> {
+                        err("unknown_entity", id)
+                    }
+
+                    work.values.any { parentOf(it) == id } -> {
+                        err("has_children", id)
+                    }
+
+                    else -> {
+                        work.remove(id)
+                        null
+                    }
+                }
+            }
+
+            "set_parent" -> {
+                val id = op.optString(1)
+                val parent = if (op.isNull(2)) null else op.optString(2)
+                val entity = work[id] ?: return err("unknown_entity", id)
+                if (parent != null && !work.containsKey(parent)) return err("unknown_parent", id, parent)
+                val updated = clone(entity)
+                if (parent == null) updated.put("parent", JSONObject.NULL) else updated.put("parent", parent)
+                work[id] = updated
+                if (cyclic(work, id)) err("invalid_result", "parent_cycle") else null
+            }
+
+            "set_transform" -> {
+                setField(work, op, "transform")
+            }
+
+            "set_visible" -> {
+                setField(work, op, "visible")
+            }
+
+            "set_pickable" -> {
+                setField(work, op, "pickable")
+            }
+
+            "set_material" -> {
+                setDataField(work, op, "model", "material")
+            }
+
+            "set_animation" -> {
+                err("unsupported", "animation")
+            }
+
+            "set_camera" -> {
+                setData(work, op, "camera") { _, _ -> null }
+            }
+
+            "set_light" -> {
+                setData(work, op, "light") { current, next ->
+                    if (current.optString("type") != next.optString("type")) {
+                        err("structural_field", op.optString(1), "light_type")
+                    } else {
+                        null
+                    }
+                }
+            }
+
+            "set_environment" -> {
+                setData(work, op, "environment") { current, next ->
+                    if (current.optString("ibl", "") != next.optString("ibl", "") ||
+                        current.optString("skybox", "") != next.optString("skybox", "")
+                    ) {
+                        err("structural_field", op.optString(1), "environment_assets")
+                    } else {
+                        null
+                    }
+                }
+            }
+
+            else -> {
+                err("unknown_op", name)
+            }
+        }
+    }
+
+    /** Whole-scene invariants after a grammar-legal op sequence. */
+    fun validateResult(work: Map<String, JSONObject>): JSONArray? {
+        var cameras = 0
+        var environments = 0
+        for (entity in work.values) {
+            when (kindOf(entity)) {
+                "camera" -> cameras++
+                "environment" -> environments++
+            }
+        }
+        return when {
+            cameras > 1 -> err("invalid_result", "multiple_cameras")
+            environments > 1 -> err("invalid_result", "multiple_environments")
+            else -> null
+        }
+    }
+
+    fun kindOf(entity: JSONObject): String = entity.optJSONObject("data")?.optString("kind", "group") ?: "group"
+
+    fun parentOf(entity: JSONObject): String? = if (entity.isNull("parent")) null else entity.optString("parent")
+
+    private fun hasAnimation(entity: JSONObject): Boolean {
+        val data = entity.optJSONObject("data") ?: return false
+        return data.optString("kind") == "model" && !data.isNull("animation")
+    }
+
+    private fun cyclic(
+        work: Map<String, JSONObject>,
+        start: String,
+    ): Boolean {
+        var current: String? = start
+        val seen = HashSet<String>()
+        while (current != null) {
+            if (!seen.add(current)) return true
+            current = work[current]?.let { parentOf(it) }
+        }
+        return false
+    }
+
+    private fun setField(
+        work: LinkedHashMap<String, JSONObject>,
+        op: JSONArray,
+        field: String,
+    ): JSONArray? {
+        val id = op.optString(1)
+        val entity = work[id] ?: return err("unknown_entity", id)
+        val updated = clone(entity)
+        updated.put(field, if (op.isNull(2)) JSONObject.NULL else op.get(2))
+        work[id] = updated
+        return null
+    }
+
+    private fun setDataField(
+        work: LinkedHashMap<String, JSONObject>,
+        op: JSONArray,
+        expectedKind: String,
+        field: String,
+    ): JSONArray? {
+        val id = op.optString(1)
+        val entity = work[id] ?: return err("unknown_entity", id)
+        if (kindOf(entity) != expectedKind) return err("kind_mismatch", id, expectedKind)
+        val updated = clone(entity)
+        updated.getJSONObject("data").put(field, if (op.isNull(2)) JSONObject.NULL else op.get(2))
+        work[id] = updated
+        return null
+    }
+
+    private fun setData(
+        work: LinkedHashMap<String, JSONObject>,
+        op: JSONArray,
+        expectedKind: String,
+        structuralCheck: (JSONObject, JSONObject) -> JSONArray?,
+    ): JSONArray? {
+        val id = op.optString(1)
+        val entity = work[id] ?: return err("unknown_entity", id)
+        if (kindOf(entity) != expectedKind) return err("kind_mismatch", id, expectedKind)
+        val next = op.optJSONObject(2) ?: return err("bad_patch", "set_$expectedKind")
+        val current = entity.getJSONObject("data")
+        structuralCheck(current, next)?.let { return it }
+        val updated = clone(entity)
+        next.put("kind", expectedKind)
+        updated.put("data", next)
+        work[id] = updated
+        return null
+    }
+
+    private fun clone(entity: JSONObject): JSONObject = JSONObject(entity.toString())
+
+    private fun err(vararg args: String): JSONArray {
+        val arr = JSONArray()
+        args.forEach { arr.put(it) }
+        return arr
+    }
+}
+
+// ── The composable factory ─────────────────────────────────────────────────
+
+@Composable
+fun MobScene3dViewport(props: Map<String, Any?>) {
+    val viewportId = props["viewport_id"] as? String ?: return
+    val w = (props["width"] as? Number)?.toFloat() ?: 340f
+    val h = (props["height"] as? Number)?.toFloat() ?: 420f
+    // clipToBounds: a surface otherwise draws past its declared bounds and
+    // stomps siblings (MobGpuView's identical treatment).
+    Box(modifier = Modifier.size(w.dp, h.dp).clipToBounds()) {
+        AndroidView(factory = { ctx -> Scene3dView(ctx, viewportId) })
+    }
+}
+
+// ── The Filament applier + surface/lifecycle shim ──────────────────────────
+
+class Scene3dView(
+    context: Context,
+    private val viewportId: String,
+) : SurfaceView(context),
+    Choreographer.FrameCallback {
+    private class Rec(
+        val entity: Int,
+        var json: JSONObject,
+        var instance: FilamentInstance? = null,
+        var assetRef: String? = null,
+        var overridden: Boolean = false,
+        var inScene: Boolean = false,
+        var camera: Camera? = null,
+        var hasLight: Boolean = false,
+        var status: String = "ready",
+        var statusDetail: String? = null,
+    )
+
+    // gltfio has no per-instance destroy in the Java API, and createInstance
+    // needs the asset's source data retained — so assets keep their source
+    // data and detached instances go to a free list. Instances that carried
+    // material overrides are NOT reused (their asset-authored factors are
+    // unrecoverable); they are abandoned until asset teardown.
+    private class AssetEntry(
+        val asset: FilamentAsset,
+        val freeInstances: ArrayDeque<FilamentInstance> = ArrayDeque(),
+    )
+
+    private val choreographer = Choreographer.getInstance()
+    private val engine = Engine.create()
+    private val renderer: Renderer = engine.createRenderer()
+    private val scene: Scene = engine.createScene()
+    private val view: View = engine.createView()
+    private val uiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK)
+    private var swapChain: SwapChain? = null
+
+    private val materialProvider = UbershaderProvider(engine)
+    private val assetLoader = AssetLoader(engine, materialProvider, EntityManager.get())
+    private val resourceLoader = ResourceLoader(engine)
+    private val assets = HashMap<String, AssetEntry>()
+
+    private val registry = LinkedHashMap<String, Rec>()
+    private var irCameraId: String? = null
+
+    private val fallbackCameraEntity = EntityManager.get().create()
+    private val fallbackCamera: Camera = engine.createCamera(fallbackCameraEntity)
+    private val skybox: Skybox =
+        Skybox.Builder().color(0.035f, 0.04f, 0.07f, 1.0f).build(engine)
+
+    private var viewportWidth = 0
+    private var viewportHeight = 0
+    private var readySent = false
+    private var frameCallbackPosted = false
+
+    init {
+        view.scene = scene
+        view.camera = fallbackCamera
+        scene.skybox = skybox
+        // Physical-light exposure (sunny 16) — matches the spike and the
+        // 100k-lux directional lights meters-and-lux scenes use.
+        fallbackCamera.setExposure(16.0f, 1.0f / 125.0f, 100.0f)
+        fallbackCamera.lookAt(0.0, 1.8, 4.8, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+        uiHelper.renderCallback =
+            object : UiHelper.RendererCallback {
+                override fun onNativeWindowChanged(surface: Surface) {
+                    swapChain?.let { engine.destroySwapChain(it) }
+                    swapChain = engine.createSwapChain(surface, uiHelper.swapChainFlags)
+                }
+
+                override fun onDetachedFromSurface() {
+                    swapChain?.let {
+                        engine.destroySwapChain(it)
+                        engine.flushAndWait()
+                        swapChain = null
+                    }
+                }
+
+                override fun onResized(
+                    width: Int,
+                    height: Int,
+                ) {
+                    viewportWidth = width
+                    viewportHeight = height
+                    view.viewport = Viewport(0, 0, width, height)
+                    updateProjection()
+                }
+            }
+        uiHelper.attachTo(this)
+    }
+
+    // ── lifecycle ──────────────────────────────────────────────────────────
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        applyOps(Scene3dRuntime.attach(viewportId, this))
+        postFrames()
+    }
+
+    override fun onDetachedFromWindow() {
+        pauseFrames()
+        Scene3dRuntime.detach(viewportId, this)
+        destroyRenderer()
+        super.onDetachedFromWindow()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        // Background pause / foreground resume: no frames while invisible.
+        if (visibility == VISIBLE && isAttachedToWindow) postFrames() else pauseFrames()
+    }
+
+    private fun postFrames() {
+        if (!frameCallbackPosted) {
+            frameCallbackPosted = true
+            choreographer.postFrameCallback(this)
+        }
+    }
+
+    private fun pauseFrames() {
+        if (frameCallbackPosted) {
+            frameCallbackPosted = false
+            choreographer.removeFrameCallback(this)
+        }
+    }
+
+    override fun doFrame(frameTimeNanos: Long) {
+        if (!frameCallbackPosted) return
+        choreographer.postFrameCallback(this)
+
+        val drained = Scene3dRuntime.drain(viewportId)
+        if (drained.reset) clearScene()
+        applyOps(drained.ops)
+        for ((pid, requestId) in drained.sceneRequests) {
+            MobScene3dBridge.nativeDeliverScene3d(pid, "scene", viewportId, requestId, sceneJson())
+        }
+
+        if (uiHelper.isReadyToRender && swapChain != null &&
+            renderer.beginFrame(swapChain!!, frameTimeNanos)
+        ) {
+            renderer.render(view)
+            renderer.endFrame()
+            if (!readySent) {
+                readySent = true
+                val owner = Scene3dRuntime.ownerPid(viewportId)
+                if (owner != 0L) {
+                    MobScene3dBridge.nativeDeliverScene3d(owner, "ready", viewportId, "", "")
+                }
+            }
+        }
+    }
+
+    // ── the applier: patch ops → Filament mutations (the mapping table) ────
+
+    private fun applyOps(ops: List<JSONArray>) {
+        for (op in ops) {
+            try {
+                applyOp(op)
+            } catch (e: Exception) {
+                // Shadow-validated ops shouldn't throw; if one does, that is
+                // an applier bug — surface it, never swallow it.
+                val owner = Scene3dRuntime.ownerPid(viewportId)
+                val error = JSONArray().put("bad_patch").put("applier: ${e.message}")
+                if (owner != 0L) {
+                    MobScene3dBridge.nativeDeliverScene3d(owner, "error", viewportId, error.toString(), "")
+                }
+                android.util.Log.e("scene3d", "applier failure on ${op.optString(0)}", e)
+            }
+        }
+    }
+
+    private fun applyOp(op: JSONArray) {
+        when (op.getString(0)) {
+            "add_entity" -> addEntity(op.getJSONObject(1))
+            "replace_entity" -> replaceEntity(op.getJSONObject(1))
+            "remove_entity" -> removeEntity(op.getString(1))
+            "set_parent" -> setParent(op.getString(1), if (op.isNull(2)) null else op.getString(2))
+            "set_transform" -> setTransform(op.getString(1), op.getJSONObject(2))
+            "set_visible" -> setVisible(op.getString(1), op.getBoolean(2))
+            "set_pickable" -> setPickable(op.getString(1), op.getBoolean(2))
+            "set_material" -> setMaterial(op.getString(1), if (op.isNull(2)) null else op.getJSONObject(2))
+            "set_camera" -> setCamera(op.getString(1), op.getJSONObject(2))
+            "set_light" -> setLight(op.getString(1), op.getJSONObject(2))
+            "set_environment" -> setEnvironment(op.getString(1), op.getJSONObject(2))
+        }
+    }
+
+    private fun addEntity(json: JSONObject) {
+        val id = json.getString("id")
+        val entity = EntityManager.get().create()
+        engine.transformManager.create(entity)
+        val rec = Rec(entity, json)
+        registry[id] = rec
+        applyLocalTransform(rec)
+        applyParent(rec)
+        buildData(rec)
+        applyVisibility(rec)
+    }
+
+    // Same id, structural change: kind-specific native resources are
+    // destroyed and recreated; the transform entity persists, so children
+    // stay parented untouched.
+    private fun replaceEntity(json: JSONObject) {
+        val id = json.getString("id")
+        val rec = registry[id] ?: return
+        tearDownData(rec)
+        rec.json = json
+        rec.status = "ready"
+        rec.statusDetail = null
+        applyLocalTransform(rec)
+        applyParent(rec)
+        buildData(rec)
+        applyVisibility(rec)
+    }
+
+    private fun removeEntity(id: String) {
+        val rec = registry.remove(id) ?: return
+        tearDownData(rec)
+        engine.transformManager.destroy(rec.entity)
+        engine.destroyEntity(rec.entity)
+        EntityManager.get().destroy(rec.entity)
+    }
+
+    private fun setParent(
+        id: String,
+        parent: String?,
+    ) {
+        val rec = registry[id] ?: return
+        rec.json =
+            rec.json.also {
+                if (parent == null) it.put("parent", JSONObject.NULL) else it.put("parent", parent)
+            }
+        applyParent(rec)
+    }
+
+    private fun setTransform(
+        id: String,
+        transform: JSONObject,
+    ) {
+        val rec = registry[id] ?: return
+        rec.json.put("transform", transform)
+        applyLocalTransform(rec)
+    }
+
+    private fun setVisible(
+        id: String,
+        visible: Boolean,
+    ) {
+        val rec = registry[id] ?: return
+        rec.json.put("visible", visible)
+        applyVisibility(rec)
+    }
+
+    private fun setPickable(
+        id: String,
+        pickable: Boolean,
+    ) {
+        // Picking is a later bead (mob_scene3d-na8); the registry membership
+        // is maintained now so readback reflects intent.
+        registry[id]?.json?.put("pickable", pickable)
+    }
+
+    private fun setMaterial(
+        id: String,
+        material: JSONObject?,
+    ) {
+        val rec = registry[id] ?: return
+        rec.json.getJSONObject("data").put("material", material ?: JSONObject.NULL)
+        if (material != null) {
+            applyMaterial(rec, material)
+        } else {
+            // Clearing an override restores the asset-authored factors.
+            // gltfio material instances have no readback for the originals,
+            // so recreate the instance from the shared asset — cheap next to
+            // an asset load, and exactly what "keep what the asset authored"
+            // means.
+            rebuildModelInstance(rec)
+        }
+    }
+
+    private fun setCamera(
+        id: String,
+        camera: JSONObject,
+    ) {
+        val rec = registry[id] ?: return
+        rec.json.getJSONObject("data").apply {
+            put("fov_y", camera.optDouble("fov_y", 45.0))
+            put("near", camera.optDouble("near", 0.1))
+            put("far", camera.optDouble("far", 100.0))
+        }
+        updateProjection()
+    }
+
+    private fun setLight(
+        id: String,
+        light: JSONObject,
+    ) {
+        val rec = registry[id] ?: return
+        light.put("kind", "light")
+        rec.json.put("data", light)
+        val lm = engine.lightManager
+        val li = lm.getInstance(rec.entity)
+        if (li == 0) return
+        lm.setIntensity(li, light.optDouble("intensity", 0.0).toFloat())
+        val color = light.optJSONArray("color")
+        if (color != null) {
+            lm.setColor(
+                li,
+                color.optDouble(0, 1.0).toFloat(),
+                color.optDouble(1, 1.0).toFloat(),
+                color.optDouble(2, 1.0).toFloat(),
+            )
+        }
+        lm.setShadowCaster(li, light.optBoolean("cast_shadows", false))
+        if (!light.isNull("falloff")) lm.setFalloff(li, light.optDouble("falloff", 1.0).toFloat())
+        if (!light.isNull("spot_inner") && !light.isNull("spot_outer")) {
+            lm.setSpotLightCone(
+                li,
+                Math.toRadians(light.getDouble("spot_inner")).toFloat(),
+                Math.toRadians(light.getDouble("spot_outer")).toFloat(),
+            )
+        }
+    }
+
+    private fun setEnvironment(
+        id: String,
+        environment: JSONObject,
+    ) {
+        val rec = registry[id] ?: return
+        environment.put("kind", "environment")
+        rec.json.put("data", environment)
+        // IBL/skybox KTX loading is the asset-pipeline bead (mob_scene3d-392).
+        // Accepted and recorded for readback; loudly logged, never silent.
+        android.util.Log.w(
+            "scene3d",
+            "environment accepted but IBL/skybox loading is not wired yet " +
+                "(bead mob_scene3d-392): ${environment.optString("ibl", "-")}",
+        )
+    }
+
+    // ── data builders / teardown ───────────────────────────────────────────
+
+    private fun buildData(rec: Rec) {
+        val data = rec.json.optJSONObject("data") ?: return
+        when (data.optString("kind")) {
+            "model" -> buildModel(rec, data)
+            "light" -> buildLight(rec, data)
+            "camera" -> buildCamera(rec)
+            "environment" -> setEnvironment(rec.json.getString("id"), data)
+        }
+    }
+
+    private fun buildModel(
+        rec: Rec,
+        data: JSONObject,
+    ) {
+        val ref = data.getString("asset")
+        val entry = loadAsset(ref)
+        val instance =
+            entry?.let { it.freeInstances.removeFirstOrNull() ?: assetLoader.createInstance(it.asset) }
+        if (entry == null || instance == null) {
+            rec.status = "error"
+            rec.statusDetail = "bad_asset"
+            val owner = Scene3dRuntime.ownerPid(viewportId)
+            if (owner != 0L) {
+                val error = JSONArray().put("bad_asset").put(ref).put("load_failed")
+                MobScene3dBridge.nativeDeliverScene3d(owner, "error", viewportId, error.toString(), "")
+            }
+            return
+        }
+        rec.instance = instance
+        rec.assetRef = ref
+        rec.overridden = false
+        val tm = engine.transformManager
+        tm.setParent(tm.getInstance(instance.root), tm.getInstance(rec.entity))
+        data.optJSONObject("material")?.let { applyMaterial(rec, it) }
+    }
+
+    private fun buildLight(
+        rec: Rec,
+        data: JSONObject,
+    ) {
+        val type =
+            when (data.optString("type")) {
+                "point" -> LightManager.Type.POINT
+                "spot" -> LightManager.Type.SPOT
+                else -> LightManager.Type.DIRECTIONAL
+            }
+        val builder =
+            LightManager
+                .Builder(type)
+                .intensity(data.optDouble("intensity", 0.0).toFloat())
+                .castShadows(data.optBoolean("cast_shadows", false))
+                // Lights shine down local -Z (the IR convention); the entity's
+                // transform orients them.
+                .direction(0.0f, 0.0f, -1.0f)
+        data.optJSONArray("color")?.let {
+            builder.color(
+                it.optDouble(0, 1.0).toFloat(),
+                it.optDouble(1, 1.0).toFloat(),
+                it.optDouble(2, 1.0).toFloat(),
+            )
+        }
+        if (!data.isNull("falloff")) builder.falloff(data.getDouble("falloff").toFloat())
+        if (!data.isNull("spot_inner") && !data.isNull("spot_outer")) {
+            builder.spotLightCone(
+                Math.toRadians(data.getDouble("spot_inner")).toFloat(),
+                Math.toRadians(data.getDouble("spot_outer")).toFloat(),
+            )
+        }
+        builder.build(engine, rec.entity)
+        rec.hasLight = true
+    }
+
+    private fun buildCamera(rec: Rec) {
+        val camera = engine.createCamera(rec.entity)
+        camera.setExposure(16.0f, 1.0f / 125.0f, 100.0f)
+        rec.camera = camera
+        irCameraId = rec.json.getString("id")
+        view.camera = camera
+        updateProjection()
+    }
+
+    private fun tearDownData(rec: Rec) {
+        rec.instance?.let { instance ->
+            if (rec.inScene) scene.removeEntities(instance.entities)
+            rec.inScene = false
+            val tm = engine.transformManager
+            tm.setParent(tm.getInstance(instance.root), 0)
+            if (!rec.overridden) {
+                rec.assetRef?.let { assets[it]?.freeInstances?.addLast(instance) }
+            }
+            rec.instance = null
+            rec.assetRef = null
+        }
+        if (rec.hasLight) {
+            scene.remove(rec.entity)
+            engine.lightManager.destroy(rec.entity)
+            rec.hasLight = false
+        }
+        if (rec.camera != null) {
+            engine.destroyCameraComponent(rec.entity)
+            rec.camera = null
+            if (irCameraId == rec.json.optString("id")) {
+                irCameraId = null
+                view.camera = fallbackCamera
+                updateProjection()
+            }
+        }
+    }
+
+    private fun rebuildModelInstance(rec: Rec) {
+        val data = rec.json.optJSONObject("data") ?: return
+        rec.instance?.let { instance ->
+            if (rec.inScene) scene.removeEntities(instance.entities)
+            rec.inScene = false
+            engine.transformManager.setParent(engine.transformManager.getInstance(instance.root), 0)
+            // Overridden by definition (that is why it is being rebuilt) —
+            // abandoned, not reused.
+            rec.instance = null
+            rec.assetRef = null
+        }
+        buildModel(rec, data)
+        applyVisibility(rec)
+    }
+
+    private fun applyMaterial(
+        rec: Rec,
+        material: JSONObject,
+    ) {
+        val instance = rec.instance ?: return
+        rec.overridden = true
+        for (mi in instance.materialInstances) {
+            material.optJSONArray("base_color")?.let {
+                if (mi.material.hasParameter("baseColorFactor")) {
+                    mi.setParameter(
+                        "baseColorFactor",
+                        it.getDouble(0).toFloat(),
+                        it.getDouble(1).toFloat(),
+                        it.getDouble(2).toFloat(),
+                        it.getDouble(3).toFloat(),
+                    )
+                }
+            }
+            if (!material.isNull("metallic") && mi.material.hasParameter("metallicFactor")) {
+                mi.setParameter("metallicFactor", material.getDouble("metallic").toFloat())
+            }
+            if (!material.isNull("roughness") && mi.material.hasParameter("roughnessFactor")) {
+                mi.setParameter("roughnessFactor", material.getDouble("roughness").toFloat())
+            }
+            material.optJSONArray("emissive")?.let {
+                if (mi.material.hasParameter("emissiveFactor")) {
+                    mi.setParameter(
+                        "emissiveFactor",
+                        it.getDouble(0).toFloat(),
+                        it.getDouble(1).toFloat(),
+                        it.getDouble(2).toFloat(),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun loadAsset(path: String): AssetEntry? {
+        assets[path]?.let { return it }
+        val bytes =
+            try {
+                File(path).readBytes()
+            } catch (e: Exception) {
+                return null
+            }
+        val buffer = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder())
+        buffer.put(bytes).rewind()
+        // Instanced creation, and source data deliberately retained: both are
+        // what makes createInstance work for later entities sharing this ref.
+        val instances = arrayOfNulls<FilamentInstance>(1)
+        val asset = assetLoader.createInstancedAsset(buffer, instances) ?: return null
+        resourceLoader.loadResources(asset)
+        val entry = AssetEntry(asset)
+        instances[0]?.let { entry.freeInstances.addLast(it) }
+        assets[path] = entry
+        return entry
+    }
+
+    // ── per-frame state pokes ──────────────────────────────────────────────
+
+    private fun applyParent(rec: Rec) {
+        val tm = engine.transformManager
+        val parentId = Scene3dShadow.parentOf(rec.json)
+        val parentInstance = parentId?.let { registry[it] }?.let { tm.getInstance(it.entity) } ?: 0
+        tm.setParent(tm.getInstance(rec.entity), parentInstance)
+    }
+
+    private fun applyLocalTransform(rec: Rec) {
+        val t = rec.json.optJSONObject("transform") ?: return
+        engine.transformManager.setTransform(
+            engine.transformManager.getInstance(rec.entity),
+            trsMatrix(t),
+        )
+    }
+
+    private fun applyVisibility(rec: Rec) {
+        val visible = rec.json.optBoolean("visible", true)
+        if (visible == rec.inScene) return
+        rec.instance?.let { instance ->
+            if (visible) scene.addEntities(instance.entities) else scene.removeEntities(instance.entities)
+        }
+        if (rec.hasLight) {
+            if (visible) scene.addEntity(rec.entity) else scene.remove(rec.entity)
+        }
+        rec.inScene = visible && (rec.instance != null || rec.hasLight)
+    }
+
+    private fun updateProjection() {
+        if (viewportWidth <= 0 || viewportHeight <= 0) return
+        val aspect = viewportWidth.toDouble() / viewportHeight.toDouble()
+        val data = irCameraId?.let { registry[it] }?.json?.optJSONObject("data")
+        val fov = data?.optDouble("fov_y", 45.0) ?: 35.0
+        val near = data?.optDouble("near", 0.1) ?: 0.05
+        val far = data?.optDouble("far", 100.0) ?: 100.0
+        (view.camera ?: fallbackCamera).setProjection(fov, aspect, near, far, Camera.Fov.VERTICAL)
+    }
+
+    /** Column-major T·R·S from the wire transform. */
+    private fun trsMatrix(t: JSONObject): FloatArray {
+        val p = t.getJSONArray("position")
+        val q = t.getJSONArray("rotation")
+        val s = t.getJSONArray("scale")
+        var x = q.getDouble(0)
+        var y = q.getDouble(1)
+        var z = q.getDouble(2)
+        var w = q.getDouble(3)
+        val norm = Math.sqrt(x * x + y * y + z * z + w * w)
+        if (norm > 1e-9) {
+            x /= norm
+            y /= norm
+            z /= norm
+            w /= norm
+        }
+        val sx = s.getDouble(0).toFloat()
+        val sy = s.getDouble(1).toFloat()
+        val sz = s.getDouble(2).toFloat()
+        val m = FloatArray(16)
+        m[0] = ((1 - 2 * (y * y + z * z)).toFloat()) * sx
+        m[1] = ((2 * (x * y + z * w)).toFloat()) * sx
+        m[2] = ((2 * (x * z - y * w)).toFloat()) * sx
+        m[4] = ((2 * (x * y - z * w)).toFloat()) * sy
+        m[5] = ((1 - 2 * (x * x + z * z)).toFloat()) * sy
+        m[6] = ((2 * (y * z + x * w)).toFloat()) * sy
+        m[8] = ((2 * (x * z + y * w)).toFloat()) * sz
+        m[9] = ((2 * (y * z - x * w)).toFloat()) * sz
+        m[10] = ((1 - 2 * (x * x + y * y)).toFloat()) * sz
+        m[12] = p.getDouble(0).toFloat()
+        m[13] = p.getDouble(1).toFloat()
+        m[14] = p.getDouble(2).toFloat()
+        m[15] = 1.0f
+        return m
+    }
+
+    // ── readback: the applied scene, from the applier's own registry ───────
+
+    private fun sceneJson(): String {
+        val entities = JSONObject()
+        val tm = engine.transformManager
+        for ((id, rec) in registry) {
+            val world = FloatArray(16)
+            tm.getWorldTransform(tm.getInstance(rec.entity), world)
+            val worldArr = JSONArray()
+            world.forEach { worldArr.put(it.toDouble()) }
+            val entity = JSONObject(rec.json.toString())
+            entity.put("kind", Scene3dShadow.kindOf(rec.json))
+            entity.put("world_transform", worldArr)
+            entity.put("status", rec.status)
+            rec.statusDetail?.let { entity.put("status_detail", it) }
+            entities.put(id, entity)
+        }
+        return JSONObject().put("entities", entities).toString()
+    }
+
+    private fun clearScene() {
+        for (id in registry.keys.toList().asReversed()) removeEntity(id)
+        irCameraId = null
+        view.camera = fallbackCamera
+    }
+
+    private fun destroyRenderer() {
+        clearScene()
+        uiHelper.detach()
+        for (entry in assets.values) assetLoader.destroyAsset(entry.asset)
+        assets.clear()
+        assetLoader.destroy()
+        materialProvider.destroyMaterials()
+        materialProvider.destroy()
+        resourceLoader.destroy()
+        engine.destroySkybox(skybox)
+        engine.destroyCameraComponent(fallbackCameraEntity)
+        EntityManager.get().destroy(fallbackCameraEntity)
+        engine.destroyView(view)
+        engine.destroyScene(scene)
+        engine.destroyRenderer(renderer)
+        swapChain?.let { engine.destroySwapChain(it) }
+        engine.destroy()
+    }
+}
