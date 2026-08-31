@@ -8,6 +8,10 @@ erl_crash.dump
 mob_scene3d-*.tar
 /tmp/
 
+# Vendored host tools (scripts/fetch_cmgen.sh) + downloaded sample corpora
+# (scripts/fetch_gltf_samples.sh) — fetched, never committed
+/vendor/
+
 # Local config — never committed (AGENTS.md)
 mob.exs
 .envrc
