@@ -781,15 +781,21 @@ class Scene3dView(
         }
         for (query in drained.queries) {
             when (query.kind) {
-                "pick" ->
+                "pick" -> {
                     pickAt(
                         query.params.optDouble("x", 0.0) * density,
                         query.params.optDouble("y", 0.0) * density,
                         query,
                     )
+                }
 
-                "sample" -> pendingSamples.addLast(query)
-                "stats" -> deliverFrameStats(query)
+                "sample" -> {
+                    pendingSamples.addLast(query)
+                }
+
+                "stats" -> {
+                    deliverFrameStats(query)
+                }
             }
         }
 

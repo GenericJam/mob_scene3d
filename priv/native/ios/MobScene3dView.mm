@@ -372,23 +372,22 @@ NSString *s3d_json_string(NSString *value) {
   NSString *viewportId = self.viewportId;
   NSData *token = query ? query[@"token"] : nil;
   NSString *requestId = query ? query[@"request_id"] : nil;
-  _view->pick(px, flippedY,
-              [pickables, viewportId, token,
-               requestId](filament::View::PickingQueryResult const &result) {
-                NSString *entityId = pickables[@(result.renderable.getId())];
-                if (token != nil) {
-                  NSString *reply =
-                      entityId != nil
-                          ? [NSString stringWithFormat:@"{\"entity\":%@}",
-                                                       s3d_json_string(
-                                                           entityId)]
-                          : @"{\"miss\":true}";
-                  MobScene3dDeliverReply(@"pick", token, viewportId, requestId,
-                                         reply);
-                } else if (entityId != nil) {
-                  MobScene3dDeliverPickEvent(viewportId, entityId);
-                }
-              });
+  _view->pick(
+      px, flippedY,
+      [pickables, viewportId, token,
+       requestId](filament::View::PickingQueryResult const &result) {
+        NSString *entityId = pickables[@(result.renderable.getId())];
+        if (token != nil) {
+          NSString *reply =
+              entityId != nil
+                  ? [NSString stringWithFormat:@"{\"entity\":%@}",
+                                               s3d_json_string(entityId)]
+                  : @"{\"miss\":true}";
+          MobScene3dDeliverReply(@"pick", token, viewportId, requestId, reply);
+        } else if (entityId != nil) {
+          MobScene3dDeliverPickEvent(viewportId, entityId);
+        }
+      });
 }
 
 // ── pixel truth: Filament readPixels over a viewport-local pt rect ────────

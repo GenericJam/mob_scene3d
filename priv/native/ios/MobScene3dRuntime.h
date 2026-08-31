@@ -34,9 +34,8 @@ void MobScene3dDeliverScene(NSData *token, NSString *viewportId,
                             NSString *requestId, NSString *sceneJson);
 /// kind = @"pick" | @"sample" | @"stats" → {:scene3d_pick | :scene3d_sample
 /// | :scene3d_frame_stats, viewport, request_id, json} to the query's owner.
-void MobScene3dDeliverReply(NSString *kind, NSData *token,
-                            NSString *viewportId, NSString *requestId,
-                            NSString *json);
+void MobScene3dDeliverReply(NSString *kind, NSData *token, NSString *viewportId,
+                            NSString *requestId, NSString *json);
 /// Touch-path pick hit → {:scene3d_pick_event, viewport, entity_id} to the
 /// viewport owner. Misses deliver nothing (the honest-miss ruling).
 void MobScene3dDeliverPickEvent(NSString *viewportId, NSString *entityId);

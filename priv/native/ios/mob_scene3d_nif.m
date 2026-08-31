@@ -361,9 +361,8 @@ static NSData *s3d_owner(NSString *viewportId) {
   return owner;
 }
 
-void MobScene3dDeliverReply(NSString *kind, NSData *token,
-                            NSString *viewportId, NSString *requestId,
-                            NSString *json) {
+void MobScene3dDeliverReply(NSString *kind, NSData *token, NSString *viewportId,
+                            NSString *requestId, NSString *json) {
   const char *atomName = NULL;
   if ([kind isEqualToString:@"pick"]) {
     atomName = "scene3d_pick";
@@ -375,10 +374,9 @@ void MobScene3dDeliverReply(NSString *kind, NSData *token,
     return;
   }
   s3d_send_to(token, ^ERL_NIF_TERM(ErlNifEnv *env) {
-    return enif_make_tuple4(env, enif_make_atom(env, atomName),
-                            s3d_make_bin(env, viewportId),
-                            s3d_make_bin(env, requestId),
-                            s3d_make_bin(env, json));
+    return enif_make_tuple4(
+        env, enif_make_atom(env, atomName), s3d_make_bin(env, viewportId),
+        s3d_make_bin(env, requestId), s3d_make_bin(env, json));
   });
 }
 
@@ -559,9 +557,7 @@ static NSDictionary *_Nullable s3d_parse_query(ErlNifEnv *env,
   if (json == nil)
     return nil;
   NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
-  id parsed = [NSJSONSerialization JSONObjectWithData:data
-                                              options:0
-                                                error:nil];
+  id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
   return [parsed isKindOfClass:[NSDictionary class]] ? parsed : nil;
 }
 
@@ -606,10 +602,9 @@ static ERL_NIF_TERM nif_scene3d_viewports(ErlNifEnv *env, int argc,
       [ids addObject:key];
   }];
   [s3d_lock() unlock];
-  NSData *json =
-      [NSJSONSerialization dataWithJSONObject:@{@"viewports" : ids}
-                                      options:0
-                                        error:nil];
+  NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"viewports" : ids}
+                                                 options:0
+                                                   error:nil];
   return s3d_result(env, [[NSString alloc] initWithData:json
                                                encoding:NSUTF8StringEncoding]);
 }
