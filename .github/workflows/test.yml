@@ -1,0 +1,67 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }}
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Tracks .tool-versions (erlang 29.0 / elixir 1.20.0-otp-29).
+          - elixir: '1.20'
+            otp: '29'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Cache deps + _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-
+
+      # The asset-pipeline tests shell out to the Khronos glTF validator via
+      # `gltf-transform validate` (see guides/assets.md). Without it those
+      # tests are excluded by test_helper.exs with a loud warning — install
+      # it so CI runs the real thing.
+      - name: Install @gltf-transform/cli (Khronos validator)
+        run: npm install -g @gltf-transform/cli@4.4.2
+
+      - run: mix deps.get
+      - run: mix deps.compile
+      - run: mix compile --warnings-as-errors
+
+      - name: Format check
+        run: mix format --check-formatted
+
+      - name: Credo (strict)
+        run: mix credo --strict
+
+      - name: erlfmt (src/ — the NIF stub)
+        run: mix erlfmt --check src/
+
+      # Includes the packed-artifact regression (tagged :integration — runs
+      # by default; it hex.builds + compiles the package in isolation).
+      - name: Tests
+        run: mix test
+        timeout-minutes: 10
