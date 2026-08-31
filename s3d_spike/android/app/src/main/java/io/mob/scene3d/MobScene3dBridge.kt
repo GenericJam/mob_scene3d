@@ -155,8 +155,6 @@ object MobScene3dBridge {
 object Scene3dRuntime {
     private const val SCHEMA = 1
 
-    // set_animation deliberately absent: animation playback is a later bead;
-    // the Elixir caps guard refuses it loudly before it ever reaches a wire.
     private val SUPPORTED_OPS =
         listOf(
             "add_entity",
@@ -167,6 +165,7 @@ object Scene3dRuntime {
             "set_visible",
             "set_pickable",
             "set_material",
+            "set_animation",
             "set_camera",
             "set_light",
             "set_environment",
@@ -195,6 +194,23 @@ object Scene3dRuntime {
 
     private val lock = Any()
     private val viewports = HashMap<String, ViewportState>()
+
+    // Asset path -> clip names, registered by the render thread after a
+    // gltfio load. Lets the BEAM-thread shadow validation reject an unknown
+    // animation name SYNCHRONOUSLY once the asset is known; before that the
+    // render thread re-checks and delivers an async scene error (the same
+    // two-tier honesty bad_asset has).
+    private val assetAnimations = HashMap<String, List<String>>()
+
+    fun registerAssetAnimations(
+        assetRef: String,
+        names: List<String>,
+    ) {
+        synchronized(lock) { assetAnimations[assetRef] = names }
+    }
+
+    /** Clip names of a loaded asset, or null while not (yet) loaded. */
+    fun animationNames(assetRef: String?): List<String>? = synchronized(lock) { assetRef?.let { assetAnimations[it] } }
 
     fun capsJson(): String {
         val ops = JSONArray()
@@ -382,13 +398,11 @@ object Scene3dShadow {
                         err("unknown_parent", id, parent)
                     }
 
-                    hasAnimation(entity) -> {
-                        err("unsupported", "animation")
-                    }
-
                     else -> {
-                        work[id] = entity
-                        null
+                        animationError(entity) ?: run {
+                            work[id] = entity
+                            null
+                        }
                     }
                 }
             }
@@ -406,13 +420,11 @@ object Scene3dShadow {
                         err("unknown_parent", id, parent)
                     }
 
-                    hasAnimation(entity) -> {
-                        err("unsupported", "animation")
-                    }
-
                     else -> {
-                        work[id] = entity
-                        null
+                        animationError(entity) ?: run {
+                            work[id] = entity
+                            null
+                        }
                     }
                 }
             }
@@ -463,7 +475,8 @@ object Scene3dShadow {
             }
 
             "set_animation" -> {
-                err("unsupported", "animation")
+                setDataField(work, op, "model", "animation")
+                    ?: work[op.optString(1)]?.let { animationError(it) }
             }
 
             "set_camera" -> {
@@ -519,9 +532,16 @@ object Scene3dShadow {
 
     fun parentOf(entity: JSONObject): String? = if (entity.isNull("parent")) null else entity.optString("parent")
 
-    private fun hasAnimation(entity: JSONObject): Boolean {
-        val data = entity.optJSONObject("data") ?: return false
-        return data.optString("kind") == "model" && !data.isNull("animation")
+    // Unknown clip names reject synchronously when the asset's clip list is
+    // already registered (loaded by the render thread); an asset still
+    // loading validates render-side instead and errors asynchronously —
+    // either way the failure is loud, never a silently idle model.
+    private fun animationError(entity: JSONObject): JSONArray? {
+        val data = entity.optJSONObject("data") ?: return null
+        if (data.optString("kind") != "model" || data.isNull("animation")) return null
+        val name = data.getJSONObject("animation").optString("name")
+        val known = Scene3dRuntime.animationNames(data.optString("asset")) ?: return null
+        return if (name in known) null else err("unknown_animation", entity.optString("id"), name)
     }
 
     private fun cyclic(
@@ -625,7 +645,28 @@ class Scene3dView(
         var hasLight: Boolean = false,
         var status: String = "ready",
         var statusDetail: String? = null,
+        var anim: AnimState? = null,
     )
+
+    // The render-thread clip clock for one model's declarative animation
+    // state. The Animator itself is NOT held here — it belongs to the
+    // gltfio instance and is looked up per frame, so a material-clear
+    // instance rebuild keeps the clock without holding a stale pointer.
+    private class AnimState(
+        val name: String,
+        val playId: String,
+        val index: Int,
+        val duration: Double,
+    ) {
+        var clock = 0.0
+        var loop = false
+        var speed = 1.0
+        var paused = false
+        var lastSeek: Double? = null
+        var done = false
+        var doneDelivered = false
+        var appliedTime = 0.0
+    }
 
     // gltfio has no per-instance destroy in the Java API, and createInstance
     // needs the asset's source data retained — so assets keep their source
@@ -679,6 +720,10 @@ class Scene3dView(
     private var lastFrameNanos = 0L
     private var framesSinceQuery = 0
     private var droppedSinceQuery = 0
+
+    // Animation clock: one dt per Choreographer tick, shared by every
+    // playing clip (render thread only).
+    private var lastAnimNanos = 0L
 
     // Tap capture: a single tap inside the viewport rides the same native
     // pick path pick/3 uses. Hits on pickable models become pick events;
@@ -776,6 +821,7 @@ class Scene3dView(
         val drained = Scene3dRuntime.drain(viewportId)
         if (drained.reset) clearScene()
         applyOps(drained.ops)
+        advanceAnimations(frameTimeNanos)
         for ((pid, requestId) in drained.sceneRequests) {
             MobScene3dBridge.nativeDeliverScene3d(pid, "scene", viewportId, requestId, sceneJson())
         }
@@ -1025,6 +1071,7 @@ class Scene3dView(
             "set_visible" -> setVisible(op.getString(1), op.getBoolean(2))
             "set_pickable" -> setPickable(op.getString(1), op.getBoolean(2))
             "set_material" -> setMaterial(op.getString(1), if (op.isNull(2)) null else op.getJSONObject(2))
+            "set_animation" -> setAnimation(op.getString(1), if (op.isNull(2)) null else op.getJSONObject(2))
             "set_camera" -> setCamera(op.getString(1), op.getJSONObject(2))
             "set_light" -> setLight(op.getString(1), op.getJSONObject(2))
             "set_environment" -> setEnvironment(op.getString(1), op.getJSONObject(2))
@@ -1124,6 +1171,122 @@ class Scene3dView(
         }
     }
 
+    private fun setAnimation(
+        id: String,
+        animation: JSONObject?,
+    ) {
+        val rec = registry[id] ?: return
+        rec.json.getJSONObject("data").put("animation", animation ?: JSONObject.NULL)
+        applyAnimationState(rec, id, animation)
+    }
+
+    // Reconcile the declarative animation intent with the render-thread
+    // clip clock. Replay = a play_id change (restart from seek ?: 0);
+    // same play_id = in-place field updates, a changed non-null seek
+    // repositions the clock without restarting (the decision record's
+    // seek semantics).
+    private fun applyAnimationState(
+        rec: Rec,
+        id: String,
+        animation: JSONObject?,
+    ) {
+        if (animation == null) {
+            // Declaratively "no animation": stop driving the clip; the pose
+            // stays where the clock left it (resources untouched).
+            rec.anim = null
+            return
+        }
+        val animator = rec.instance?.animator
+        if (animator == null) {
+            // No instance = bad_asset already reported; nothing to drive.
+            rec.anim = null
+            return
+        }
+        val name = animation.optString("name")
+        val playId = animation.optString("play_id")
+        var index = -1
+        for (i in 0 until animator.animationCount) {
+            if (animator.getAnimationName(i) == name) {
+                index = i
+                break
+            }
+        }
+        if (index < 0) {
+            // Unknown clip that raced the shadow's name registry: honest and
+            // loud — an error event to the owner AND an error-shaped
+            // animation_state in the readback. Never a silently idle model.
+            rec.anim = AnimState(name, playId, -1, 0.0)
+            val owner = Scene3dRuntime.ownerPid(viewportId)
+            if (owner != 0L) {
+                val error = JSONArray().put("unknown_animation").put(id).put(name)
+                MobScene3dBridge.nativeDeliverScene3d(owner, "error", viewportId, error.toString(), "")
+            }
+            return
+        }
+        val seek = if (animation.isNull("seek")) null else animation.getDouble("seek")
+        val current = rec.anim
+        val restart = current == null || current.playId != playId || current.name != name || current.index < 0
+        val state =
+            if (restart) {
+                AnimState(name, playId, index, animator.getAnimationDuration(index).toDouble())
+                    .also {
+                        it.clock = seek ?: 0.0
+                        rec.anim = it
+                    }
+            } else {
+                current!!.also {
+                    if (seek != null && seek != it.lastSeek) it.clock = seek
+                }
+            }
+        state.loop = animation.optBoolean("loop", false)
+        state.speed = animation.optDouble("speed", 1.0)
+        state.paused = animation.optBoolean("paused", false)
+        state.lastSeek = seek
+    }
+
+    /** Advance every model's clip clock and pose; deliver completions. */
+    private fun advanceAnimations(frameTimeNanos: Long) {
+        // Clamped dt: a background pause must not fast-forward clips to
+        // their end on resume (the clock freezes with the vsync loop).
+        val dt =
+            if (lastAnimNanos == 0L) {
+                0.0
+            } else {
+                ((frameTimeNanos - lastAnimNanos) / 1e9).coerceIn(0.0, 0.1)
+            }
+        lastAnimNanos = frameTimeNanos
+        for (rec in registry.values) {
+            val st = rec.anim ?: continue
+            if (st.index < 0) continue
+            val animator = rec.instance?.animator ?: continue
+            if (!st.paused && !st.done) st.clock += dt * st.speed
+            st.appliedTime =
+                when {
+                    st.duration <= 0.0 -> 0.0
+                    st.loop -> st.clock.mod(st.duration)
+                    else -> st.clock.coerceAtMost(st.duration)
+                }
+            animator.applyAnimation(st.index, st.appliedTime.toFloat())
+            animator.updateBoneMatrices()
+            if (!st.loop && !st.paused && !st.done && st.clock >= st.duration) {
+                // Clip end: clamp the pose at the final frame and deliver
+                // {:animation_done, play_id} once per play_id. Completion
+                // needs a RUNNING clock — a paused clip seeked to the end
+                // holds the final pose without completing until unpaused.
+                // Seeking a completed clip repositions the pose; only a new
+                // play_id runs it again.
+                st.done = true
+                if (!st.doneDelivered) {
+                    st.doneDelivered = true
+                    val owner = Scene3dRuntime.ownerPid(viewportId)
+                    if (owner != 0L) {
+                        MobScene3dBridge.nativeDeliverScene3d(owner, "anim_done", viewportId, st.playId, "")
+                    }
+                }
+            }
+        }
+    }
+
     private fun setCamera(
         id: String,
         camera: JSONObject,
@@ -1220,6 +1383,10 @@ class Scene3dView(
         val tm = engine.transformManager
         tm.setParent(tm.getInstance(instance.root), tm.getInstance(rec.entity))
         data.optJSONObject("material")?.let { applyMaterial(rec, it) }
+        // Reconcile the declared animation with the (possibly fresh)
+        // instance: same play_id keeps its clock across a material-clear
+        // rebuild; a new entity starts from seek ?: 0.
+        applyAnimationState(rec, rec.json.getString("id"), data.optJSONObject("animation"))
     }
 
     private fun buildLight(
@@ -1268,6 +1435,9 @@ class Scene3dView(
     }
 
     private fun tearDownData(rec: Rec) {
+        // Structural teardown (replace/remove): the clip identity dies with
+        // the data payload; a replacement entity re-resolves from its json.
+        rec.anim = null
         rec.instance?.let { instance ->
             if (rec.inScene) scene.removeEntities(instance.entities)
             rec.inScene = false
@@ -1365,6 +1535,16 @@ class Scene3dView(
         val entry = AssetEntry(asset)
         instances[0]?.let { entry.freeInstances.addLast(it) }
         assets[path] = entry
+        // Publish the asset's clip names so the BEAM-thread shadow can
+        // reject unknown animation names synchronously from now on.
+        val animator = instances[0]?.animator
+        val names =
+            if (animator == null) {
+                emptyList()
+            } else {
+                List(animator.animationCount) { animator.getAnimationName(it) }
+            }
+        Scene3dRuntime.registerAssetAnimations(path, names)
         return entry
     }
 
@@ -1458,6 +1638,41 @@ class Scene3dView(
             entity.put("world_transform", worldArr)
             entity.put("status", rec.status)
             rec.statusDetail?.let { entity.put("status_detail", it) }
+            rec.anim?.let { st ->
+                // Native truth, not intent echoed back: the applier's own
+                // clip clock (data.animation above is the mirrored intent).
+                val animState =
+                    JSONObject()
+                        .put("name", st.name)
+                        .put("play_id", st.playId)
+                if (st.index < 0) {
+                    animState.put("error", "unknown_animation")
+                } else {
+                    animState
+                        .put("time", Math.round(st.appliedTime * 1000.0) / 1000.0)
+                        .put("done", st.done)
+                        .put("paused", st.paused)
+                        .put("loop", st.loop)
+                }
+                entity.put("animation_state", animState)
+            }
+            // World transforms of the instance's NAMED glTF nodes: animation
+            // retargets nodes inside the asset, so post-settle orientations
+            // (the Chopaat shell-slot contract) are readable per node.
+            val asset = rec.assetRef?.let { assets[it]?.asset }
+            val instance = rec.instance
+            if (asset != null && instance != null) {
+                val nodes = JSONObject()
+                for (nodeEntity in instance.entities) {
+                    val name = asset.getName(nodeEntity) ?: continue
+                    val nodeWorld = FloatArray(16)
+                    tm.getWorldTransform(tm.getInstance(nodeEntity), nodeWorld)
+                    val nodeArr = JSONArray()
+                    nodeWorld.forEach { nodeArr.put(it.toDouble()) }
+                    nodes.put(name, nodeArr)
+                }
+                if (nodes.length() > 0) entity.put("nodes", nodes)
+            }
             entities.put(id, entity)
         }
         return JSONObject().put("entities", entities).toString()

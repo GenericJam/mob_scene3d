@@ -1,0 +1,564 @@
+{
+  "version": 1,
+  "file": "priv/assets/tumbles.glb",
+  "generator": "assets/scripts/tumble.py",
+  "contract": "Runtime: place the tumbles scene with its origin at the board center-plate top surface, assign each game's 7 drawn pool shell meshes to slot nodes shell_0..shell_6 (all share the center-bottom-origin, dome-up-rest convention), play the named animation for the rolled outcome. aperture_up[i] == true means slot i ends aperture-up: the node's local +Y (glTF) points world-DOWN (|dot| >= 0.7); dome-up points world-up. After settle, scene readback must match aperture_up.",
+  "slots": [
+    "shell_0",
+    "shell_1",
+    "shell_2",
+    "shell_3",
+    "shell_4",
+    "shell_5",
+    "shell_6"
+  ],
+  "fps": 60,
+  "duration_band_s": [
+    1.5166666666666666,
+    2.5166666666666666
+  ],
+  "up_axis_tolerance": 0.7,
+  "takes_per_outcome": 4,
+  "proxy": {
+    "dims_m": [
+      0.023492,
+      0.016648,
+      0.010554
+    ],
+    "extent_m": 0.023492,
+    "pool_window_m": [
+      0.023,
+      0.024
+    ],
+    "pool_dims_min_m": [
+      0.023,
+      0.012393,
+      0.007302
+    ],
+    "pool_dims_max_m": [
+      0.024,
+      0.0198,
+      0.01318
+    ],
+    "hull_tris": 796,
+    "centroid_z_m": 0.004872
+  },
+  "animations": {
+    "throw_k0_v0": {
+      "count": 0,
+      "take": 0,
+      "seed": 1,
+      "duration_s": 1.5,
+      "aperture_up": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "throw_k0_v1": {
+      "count": 0,
+      "take": 1,
+      "seed": 4,
+      "duration_s": 1.5,
+      "aperture_up": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "throw_k0_v2": {
+      "count": 0,
+      "take": 2,
+      "seed": 15,
+      "duration_s": 1.5,
+      "aperture_up": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "throw_k0_v3": {
+      "count": 0,
+      "take": 3,
+      "seed": 28,
+      "duration_s": 1.5,
+      "aperture_up": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "throw_k1_v0": {
+      "count": 1,
+      "take": 0,
+      "seed": 100004,
+      "duration_s": 1.5,
+      "aperture_up": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    "throw_k1_v1": {
+      "count": 1,
+      "take": 1,
+      "seed": 100008,
+      "duration_s": 2.2333,
+      "aperture_up": [
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "throw_k1_v2": {
+      "count": 1,
+      "take": 2,
+      "seed": 100010,
+      "duration_s": 1.5,
+      "aperture_up": [
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "throw_k1_v3": {
+      "count": 1,
+      "take": 3,
+      "seed": 100012,
+      "duration_s": 1.5,
+      "aperture_up": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    "throw_k2_v0": {
+      "count": 2,
+      "take": 0,
+      "seed": 200000,
+      "duration_s": 2.15,
+      "aperture_up": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true
+      ]
+    },
+    "throw_k2_v1": {
+      "count": 2,
+      "take": 1,
+      "seed": 200005,
+      "duration_s": 1.8,
+      "aperture_up": [
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    "throw_k2_v2": {
+      "count": 2,
+      "take": 2,
+      "seed": 200007,
+      "duration_s": 2.0,
+      "aperture_up": [
+        true,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "throw_k2_v3": {
+      "count": 2,
+      "take": 3,
+      "seed": 200011,
+      "duration_s": 1.5,
+      "aperture_up": [
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false
+      ]
+    },
+    "throw_k3_v0": {
+      "count": 3,
+      "take": 0,
+      "seed": 300006,
+      "duration_s": 1.95,
+      "aperture_up": [
+        false,
+        true,
+        true,
+        false,
+        true,
+        false,
+        false
+      ]
+    },
+    "throw_k3_v1": {
+      "count": 3,
+      "take": 1,
+      "seed": 300007,
+      "duration_s": 1.95,
+      "aperture_up": [
+        true,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true
+      ]
+    },
+    "throw_k3_v2": {
+      "count": 3,
+      "take": 2,
+      "seed": 300008,
+      "duration_s": 2.0833,
+      "aperture_up": [
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        true
+      ]
+    },
+    "throw_k3_v3": {
+      "count": 3,
+      "take": 3,
+      "seed": 300010,
+      "duration_s": 1.5,
+      "aperture_up": [
+        true,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true
+      ]
+    },
+    "throw_k4_v0": {
+      "count": 4,
+      "take": 0,
+      "seed": 400000,
+      "duration_s": 1.5,
+      "aperture_up": [
+        true,
+        false,
+        false,
+        false,
+        true,
+        true,
+        true
+      ]
+    },
+    "throw_k4_v1": {
+      "count": 4,
+      "take": 1,
+      "seed": 400003,
+      "duration_s": 1.5,
+      "aperture_up": [
+        false,
+        false,
+        true,
+        false,
+        true,
+        true,
+        true
+      ]
+    },
+    "throw_k4_v2": {
+      "count": 4,
+      "take": 2,
+      "seed": 400004,
+      "duration_s": 2.15,
+      "aperture_up": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        false,
+        false
+      ]
+    },
+    "throw_k4_v3": {
+      "count": 4,
+      "take": 3,
+      "seed": 400006,
+      "duration_s": 2.4667,
+      "aperture_up": [
+        true,
+        false,
+        true,
+        false,
+        true,
+        false,
+        true
+      ]
+    },
+    "throw_k5_v0": {
+      "count": 5,
+      "take": 0,
+      "seed": 500002,
+      "duration_s": 1.7667,
+      "aperture_up": [
+        true,
+        true,
+        false,
+        true,
+        true,
+        false,
+        true
+      ]
+    },
+    "throw_k5_v1": {
+      "count": 5,
+      "take": 1,
+      "seed": 500007,
+      "duration_s": 1.9667,
+      "aperture_up": [
+        true,
+        true,
+        true,
+        false,
+        false,
+        true,
+        true
+      ]
+    },
+    "throw_k5_v2": {
+      "count": 5,
+      "take": 2,
+      "seed": 500009,
+      "duration_s": 1.5,
+      "aperture_up": [
+        true,
+        true,
+        true,
+        true,
+        false,
+        false,
+        true
+      ]
+    },
+    "throw_k5_v3": {
+      "count": 5,
+      "take": 3,
+      "seed": 500020,
+      "duration_s": 2.3333,
+      "aperture_up": [
+        true,
+        false,
+        true,
+        true,
+        true,
+        false,
+        true
+      ]
+    },
+    "throw_k6_v0": {
+      "count": 6,
+      "take": 0,
+      "seed": 600017,
+      "duration_s": 1.6667,
+      "aperture_up": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false
+      ]
+    },
+    "throw_k6_v1": {
+      "count": 6,
+      "take": 1,
+      "seed": 600024,
+      "duration_s": 2.4667,
+      "aperture_up": [
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "throw_k6_v2": {
+      "count": 6,
+      "take": 2,
+      "seed": 600026,
+      "duration_s": 1.6,
+      "aperture_up": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true
+      ]
+    },
+    "throw_k6_v3": {
+      "count": 6,
+      "take": 3,
+      "seed": 600028,
+      "duration_s": 1.8167,
+      "aperture_up": [
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "throw_k7_v0": {
+      "count": 7,
+      "take": 0,
+      "seed": 700000,
+      "duration_s": 2.2167,
+      "aperture_up": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "throw_k7_v1": {
+      "count": 7,
+      "take": 1,
+      "seed": 700011,
+      "duration_s": 1.5,
+      "aperture_up": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "throw_k7_v2": {
+      "count": 7,
+      "take": 2,
+      "seed": 700015,
+      "duration_s": 2.1333,
+      "aperture_up": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "throw_k7_v3": {
+      "count": 7,
+      "take": 3,
+      "seed": 700037,
+      "duration_s": 2.25,
+      "aperture_up": [
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true
+      ]
+    }
+  },
+  "stats": {
+    "sims_total": 160,
+    "rerolls": 128,
+    "reroll_reasons": {
+      "outcome 1 != target 0": 4,
+      "not settled inside band": 25,
+      "outcome 2 != target 0": 2,
+      "shell 3 rests off-plate": 13,
+      "shell 3 ambiguous": 2,
+      "shell 0 ambiguous": 3,
+      "shell 2 rests off-plate": 11,
+      "shell 5 ambiguous": 3,
+      "shell 1 ambiguous": 2,
+      "shell 5 rests off-plate": 5,
+      "shell 6 rests off-plate": 6,
+      "shell 1 rests off-plate": 3,
+      "outcome 2 != target 1": 2,
+      "outcome 0 != target 1": 1,
+      "outcome 3 != target 2": 2,
+      "outcome 2 != target 3": 1,
+      "shell 6 ambiguous": 1,
+      "shell 4 rests off-plate": 7,
+      "outcome 5 != target 4": 1,
+      "shell 0 rests off-plate": 10,
+      "outcome 6 != target 5": 2,
+      "outcome 4 != target 5": 1,
+      "outcome 3 != target 5": 1,
+      "outcome 3 != target 6": 2,
+      "outcome 4 != target 6": 1,
+      "outcome 5 != target 6": 6,
+      "shell 2 ambiguous": 4,
+      "outcome 6 != target 7": 3,
+      "outcome 4 != target 7": 2,
+      "outcome 5 != target 7": 2
+    }
+  }
+}

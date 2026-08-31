@@ -1,0 +1,155 @@
+    warning: module attribute @vp was set but never used
+    │
+ 13 │   @vp "tumble_vp"
+    │   ~~~~~~~~~~~~~~~
+    │
+    └─ scripts/probe_animation.exs:13: TumbleProbe (module)
+
+connect: true
+screen: S3dSpike.HomeScreen
+screen after nav: S3dSpike.TumbleScreen
+viewports: {:ok, ["tumble_vp"]}
+tumbles status: "ready"
+named nodes: ["shell_0", "shell_1", "shell_2", "shell_3", "shell_4", "shell_5", "shell_6"]
+OK   readback exposes the seven slot nodes
+animation_done throw_k0_v0-69 observed after ~1807ms
+throw_k0_v0 animation_state: %{
+  "done" => true,
+  "loop" => false,
+  "name" => "throw_k0_v0",
+  "paused" => false,
+  "play_id" => "throw_k0_v0-69",
+  "time" => 1.517
+}
+OK   throw_k0_v0: readback shows done for throw_k0_v0-69
+throw_k0_v0 aperture_up (classified from readback): [false, false, false, false, false, false, false]
+throw_k0_v0 aperture_up (manifest): [false, false, false, false, false, false, false]
+throw_k0_v0 per-slot local+Y world-Y components: [
+  {0, 0.9981},
+  {1, 0.9924},
+  {2, 0.9981},
+  {3, 0.9952},
+  {4, 0.9947},
+  {5, 0.9989},
+  {6, 0.9976}
+]
+OK   throw_k0_v0: exactly 0 up
+OK   throw_k0_v0: per-slot aperture_up matches the manifest
+animation_done throw_k4_v0-133 observed after ~1852ms
+throw_k4_v0 animation_state: %{
+  "done" => true,
+  "loop" => false,
+  "name" => "throw_k4_v0",
+  "paused" => false,
+  "play_id" => "throw_k4_v0-133",
+  "time" => 1.517
+}
+OK   throw_k4_v0: readback shows done for throw_k4_v0-133
+throw_k4_v0 aperture_up (classified from readback): [true, false, false, false, true, true, true]
+throw_k4_v0 aperture_up (manifest): [true, false, false, false, true, true, true]
+throw_k4_v0 per-slot local+Y world-Y components: [
+  {0, -1.0},
+  {1, 0.9904},
+  {2, 0.9947},
+  {3, 0.9883},
+  {4, -0.9997},
+  {5, -1.0},
+  {6, -1.0}
+]
+OK   throw_k4_v0: exactly 4 up
+OK   throw_k4_v0: per-slot aperture_up matches the manifest
+animation_done throw_k7_v0-197 observed after ~2572ms
+throw_k7_v0 animation_state: %{
+  "done" => true,
+  "loop" => false,
+  "name" => "throw_k7_v0",
+  "paused" => false,
+  "play_id" => "throw_k7_v0-197",
+  "time" => 2.233
+}
+OK   throw_k7_v0: readback shows done for throw_k7_v0-197
+throw_k7_v0 aperture_up (classified from readback): [true, true, true, true, true, true, true]
+throw_k7_v0 aperture_up (manifest): [true, true, true, true, true, true, true]
+throw_k7_v0 per-slot local+Y world-Y components: [
+  {0, -1.0},
+  {1, -1.0},
+  {2, -1.0},
+  {3, -0.9971},
+  {4, -0.9998},
+  {5, -0.9989},
+  {6, -1.0}
+]
+OK   throw_k7_v0: exactly 7 up
+OK   throw_k7_v0: per-slot aperture_up matches the manifest
+loop animation_state (t, t+1.2s): {%{
+   "done" => false,
+   "loop" => true,
+   "name" => "throw_k4_v1",
+   "paused" => false,
+   "play_id" => "loop-261",
+   "time" => 1.417
+ },
+ %{
+   "done" => false,
+   "loop" => true,
+   "name" => "throw_k4_v1",
+   "paused" => false,
+   "play_id" => "loop-261",
+   "time" => 1.167
+ }}
+loop frame_stats (1.2s window): %{
+  dropped: 11,
+  frames: 12,
+  entities: 3,
+  avg_ms: 63.333,
+  p95_ms: 133.333,
+  renderables: 8
+}
+OK   loop: never done
+OK   loop: clip clock advances
+OK   loop: frames rendered between queries
+OK   loop: no {:animation_done, ...} delivered
+seek+paused animation_state (0.05, duration): {%{
+   "done" => false,
+   "loop" => false,
+   "name" => "throw_k4_v0",
+   "paused" => true,
+   "play_id" => "seek-325",
+   "time" => 0.05
+ },
+ %{
+   "done" => false,
+   "loop" => false,
+   "name" => "throw_k4_v0",
+   "paused" => true,
+   "play_id" => "seek-325",
+   "time" => 1.5
+ }}
+seek+paused sample @0.05s: %{
+  dominant: 4280691779,
+  dominant_share: 0.13542699724517906,
+  average: 4285624695,
+  distinct: 1495,
+  pixels: 27225
+}
+seek+paused sample @settle: %{
+  dominant: 4280691523,
+  dominant_share: 0.24077134986225895,
+  average: 4281941328,
+  distinct: 716,
+  pixels: 27225
+}
+OK   seek: t=0.05 held
+OK   seek: t=duration held (same play_id, no restart)
+seek: per-slot node travel between the two poses (m): [0.0385, 0.0636, 0.053, 0.0757, 0.0388, 0.0511, 0.0316]
+OK   seek: node geometry differs between poses
+OK   seek: sample_region distinguishes the two static poses
+OK   seek+paused: no done event (clock frozen)
+animation_done replay-a-389 observed after ~1850ms
+animation_done replay-b-453 observed after ~1894ms
+replay done list (newest first): ["replay-b-453", "replay-a-389", "throw_k7_v0-197", "throw_k4_v0-133"]
+OK   replay: both play_ids completed
+commit_raw unknown: {:error, {:unknown_animation, "tumbles", "no_such_clip"}}
+OK   commit_raw unknown: {:error, {:unknown_animation, "tumbles", "no_such_clip"}}
+
+ALL ANIMATION CONTRACT CHECKS PASSED
