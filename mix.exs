@@ -5,6 +5,9 @@ defmodule MobScene3d.MixProject do
     [
       app: :mob_scene3d,
       version: "0.1.0",
+      description:
+        "Declarative 3D scenes for Mob apps — one scene IR, diffed and " <>
+          "patched over a NIF wire, rendered by Filament on both platforms",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -19,6 +22,7 @@ defmodule MobScene3d.MixProject do
   defp package do
     [
       licenses: ["MIT"],
+      links: %{"GitHub" => "https://github.com/GenericJam/mob_scene3d"},
       # Native sources + the plugin manifest must ship in the package — the
       # host's native build compiles them from deps/mob_scene3d/priv
       # (mob_camera precedent).
