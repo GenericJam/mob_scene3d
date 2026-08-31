@@ -126,6 +126,25 @@ defmodule Mob.Scene3d.IR.PatchTest do
 
       assert Patch.diff(a, b) == [{:set_animation, "cowrie", throw2}]
     end
+
+    test "a scoped override list is per-frame: one whole-value set_material" do
+      body = %Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"}
+      accent = %Material{emissive: {0.2, 0.2, 0.0}, scope: "pawn_accent"}
+      a = IR.new([%Entity{id: "pawn", data: %Model{asset: "pawn.glb", material: [body]}}])
+      b = IR.new([%Entity{id: "pawn", data: %Model{asset: "pawn.glb", material: [body, accent]}}])
+
+      assert Patch.diff(a, b) == [{:set_material, "pawn", [body, accent]}]
+      assert Patch.apply(a, Patch.diff(a, b)) == {:ok, b}
+    end
+
+    test "single-override back-compat: scope nil diffs and applies as before" do
+      tint = %Material{base_color: {1.0, 0.0, 0.0, 1.0}}
+      a = IR.new([%Entity{id: "m", data: %Model{asset: "m.glb"}}])
+      b = IR.new([%Entity{id: "m", data: %Model{asset: "m.glb", material: tint}}])
+
+      assert Patch.diff(a, b) == [{:set_material, "m", tint}]
+      assert Patch.apply(a, Patch.diff(a, b)) == {:ok, b}
+    end
   end
 
   # ── generators ──────────────────────────────────────────────────────────────
@@ -189,16 +208,27 @@ defmodule Mob.Scene3d.IR.PatchTest do
     ])
   end
 
+  # Scoped-override scopes draw from a tiny pool (the two-tone pawn's
+  # material names) so list draws overlap and the round-trip exercises
+  # same-scope value changes, not just add/remove.
+  @scopes ~w(pawn_body pawn_accent)
+
   defp gen_model do
     gen all asset <- member_of(@assets),
-            material <- one_of([constant(nil), gen_material()]),
+            material <-
+              one_of([
+                constant(nil),
+                gen_material(one_of([constant(nil) | Enum.map(@scopes, &constant/1)])),
+                gen_material_list()
+              ]),
             animation <- one_of([constant(nil), gen_animation()]) do
       %Model{asset: asset, material: material, animation: animation}
     end
   end
 
-  defp gen_material do
-    gen all base_color <- one_of([constant(nil), gen_rgba()]),
+  defp gen_material(scope_gen) do
+    gen all scope <- scope_gen,
+            base_color <- one_of([constant(nil), gen_rgba()]),
             metallic <- one_of([constant(nil), unit_float()]),
             roughness <- one_of([constant(nil), unit_float()]),
             emissive <- one_of([constant(nil), gen_rgb()]) do
@@ -206,8 +236,22 @@ defmodule Mob.Scene3d.IR.PatchTest do
         base_color: base_color,
         metallic: metallic,
         roughness: roughness,
-        emissive: emissive
+        emissive: emissive,
+        scope: scope
       }
+    end
+  end
+
+  # List form: distinct non-nil scopes by construction (a prefix of the
+  # pool), per the IR validation rules.
+  defp gen_material_list do
+    gen all count <- integer(1..length(@scopes)),
+            materials <-
+              @scopes
+              |> Enum.take(count)
+              |> Enum.map(&gen_material(constant(&1)))
+              |> fixed_list() do
+      materials
     end
   end
 

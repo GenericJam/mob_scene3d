@@ -14,6 +14,31 @@ for the canonical process.
 
 ### Added
 
+- Name-scoped material overrides (bead `mob_scene3d-bqc`;
+  `decisions/2026-08-31-scoped-material-overrides.md`): tint one named glTF
+  material instead of the whole model — the Chopaat two-tone pawn contract
+  (`pawn_body` takes the player color, `pawn_accent` stays authored ivory).
+  - `%Mob.Scene3d.IR.Material{}` gains `scope: nil | "material_name"`
+    (`nil` = every material instance, the previous behaviour and still the
+    default); `Model.material` also accepts a list of `%Material{}` with
+    distinct non-nil scopes for multiple simultaneous overrides.
+  - Native appliers (both platforms) filter `materialInstances` by glTF
+    material name; unknown scope names are honest errors —
+    `{:unknown_material, id, name}` synchronously once the asset's material
+    names are registered, async via `{:scene3d_error, ...}` when the check
+    races the asset load (the unknown-animation two-tier honesty).
+  - `scene/1` readback gains per-model `"material_state"`: applied truth
+    per override (scope, applied params, matched instance names, or an
+    `unknown_material` error marker).
+  - Version skew: native caps gain an additive `"features"` list declaring
+    `"material_scope"`; committing a scoped override against an applier
+    without it degrades loudly with `{:unsupported, :material_scope}`
+    (wire schema stays 1; unscoped overrides still ship to old appliers).
+  - Whole-value replace semantics now hold for parameter removal: an
+    override that stops touching a previously overridden parameter rebuilds
+    the instance from the shared asset instead of silently keeping the old
+    factor.
+
 - glTF animation playback (bead `mob_scene3d-al6`;
   `decisions/2026-08-30-animation-playback.md`): the honest stub is now the
   real thing on both platforms.

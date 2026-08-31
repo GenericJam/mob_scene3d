@@ -45,6 +45,7 @@ import com.google.android.filament.Camera
 import com.google.android.filament.Engine
 import com.google.android.filament.EntityManager
 import com.google.android.filament.LightManager
+import com.google.android.filament.MaterialInstance
 import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
 import com.google.android.filament.Skybox
@@ -171,6 +172,10 @@ object Scene3dRuntime {
             "set_environment",
         )
 
+    // Additive grammar extensions riding existing ops (the Elixir side
+    // refuses to encode them unless declared here — version-skew guard).
+    private val SUPPORTED_FEATURES = listOf("material_scope")
+
     class ViewportState {
         // Insertion-ordered so bootstrap replay is parents-first for free
         // (diff order guarantees parents precede children on first add, and
@@ -202,6 +207,11 @@ object Scene3dRuntime {
     // two-tier honesty bad_asset has).
     private val assetAnimations = HashMap<String, List<String>>()
 
+    // Asset path -> glTF material names, same two-tier honesty: synchronous
+    // unknown_material rejection once the asset is loaded, async render-side
+    // error before that.
+    private val assetMaterials = HashMap<String, List<String>>()
+
     fun registerAssetAnimations(
         assetRef: String,
         names: List<String>,
@@ -212,10 +222,26 @@ object Scene3dRuntime {
     /** Clip names of a loaded asset, or null while not (yet) loaded. */
     fun animationNames(assetRef: String?): List<String>? = synchronized(lock) { assetRef?.let { assetAnimations[it] } }
 
+    fun registerAssetMaterials(
+        assetRef: String,
+        names: List<String>,
+    ) {
+        synchronized(lock) { assetMaterials[assetRef] = names }
+    }
+
+    /** glTF material names of a loaded asset, or null while not (yet) loaded. */
+    fun materialNames(assetRef: String?): List<String>? = synchronized(lock) { assetRef?.let { assetMaterials[it] } }
+
     fun capsJson(): String {
         val ops = JSONArray()
         SUPPORTED_OPS.forEach { ops.put(it) }
-        return JSONObject().put("schema", SCHEMA).put("ops", ops).toString()
+        val features = JSONArray()
+        SUPPORTED_FEATURES.forEach { features.put(it) }
+        return JSONObject()
+            .put("schema", SCHEMA)
+            .put("ops", ops)
+            .put("features", features)
+            .toString()
     }
 
     fun apply(
@@ -399,7 +425,7 @@ object Scene3dShadow {
                     }
 
                     else -> {
-                        animationError(entity) ?: run {
+                        animationError(entity) ?: materialError(entity) ?: run {
                             work[id] = entity
                             null
                         }
@@ -421,7 +447,7 @@ object Scene3dShadow {
                     }
 
                     else -> {
-                        animationError(entity) ?: run {
+                        animationError(entity) ?: materialError(entity) ?: run {
                             work[id] = entity
                             null
                         }
@@ -472,6 +498,7 @@ object Scene3dShadow {
 
             "set_material" -> {
                 setDataField(work, op, "model", "material")
+                    ?: work[op.optString(1)]?.let { materialError(it) }
             }
 
             "set_animation" -> {
@@ -531,6 +558,36 @@ object Scene3dShadow {
     fun kindOf(entity: JSONObject): String = entity.optJSONObject("data")?.optString("kind", "group") ?: "group"
 
     fun parentOf(entity: JSONObject): String? = if (entity.isNull("parent")) null else entity.optString("parent")
+
+    /**
+     * Normalize a wire material override — a single object (scope nil = all
+     * instances, the pre-scope wire shape) or an array of scoped overrides —
+     * to a list. Anything else (including null) is "no override".
+     */
+    fun overrides(material: Any?): List<JSONObject> =
+        when (material) {
+            is JSONObject -> listOf(material)
+            is JSONArray -> (0 until material.length()).mapNotNull { material.optJSONObject(it) }
+            else -> emptyList()
+        }
+
+    /** The scope of one override entry: a glTF material name, or null = all. */
+    fun scopeOf(override: JSONObject): String? = if (override.isNull("scope")) null else override.optString("scope")
+
+    // Unknown scope names reject synchronously when the asset's material
+    // list is already registered (loaded by the render thread); an asset
+    // still loading validates render-side instead and errors asynchronously
+    // — the same two-tier honesty animation names have.
+    private fun materialError(entity: JSONObject): JSONArray? {
+        val data = entity.optJSONObject("data") ?: return null
+        if (data.optString("kind") != "model" || data.isNull("material")) return null
+        val known = Scene3dRuntime.materialNames(data.optString("asset")) ?: return null
+        for (override in overrides(data.opt("material"))) {
+            val scope = scopeOf(override) ?: continue
+            if (scope !in known) return err("unknown_material", entity.optString("id"), scope)
+        }
+        return null
+    }
 
     // Unknown clip names reject synchronously when the asset's clip list is
     // already registered (loaded by the render thread); an asset still
@@ -646,6 +703,10 @@ class Scene3dView(
         var status: String = "ready",
         var statusDetail: String? = null,
         var anim: AnimState? = null,
+        // Applied material-override truth for scene/1 readback: one entry
+        // per override (scope, applied params, matched instance names, or
+        // an unknown_material error marker). Null = no override applied.
+        var materialState: JSONArray? = null,
     )
 
     // The render-thread clip clock for one model's declarative animation
@@ -1070,7 +1131,7 @@ class Scene3dView(
             "set_transform" -> setTransform(op.getString(1), op.getJSONObject(2))
             "set_visible" -> setVisible(op.getString(1), op.getBoolean(2))
             "set_pickable" -> setPickable(op.getString(1), op.getBoolean(2))
-            "set_material" -> setMaterial(op.getString(1), if (op.isNull(2)) null else op.getJSONObject(2))
+            "set_material" -> setMaterial(op.getString(1), if (op.isNull(2)) null else op.get(2))
             "set_animation" -> setAnimation(op.getString(1), if (op.isNull(2)) null else op.getJSONObject(2))
             "set_camera" -> setCamera(op.getString(1), op.getJSONObject(2))
             "set_light" -> setLight(op.getString(1), op.getJSONObject(2))
@@ -1155,21 +1216,48 @@ class Scene3dView(
 
     private fun setMaterial(
         id: String,
-        material: JSONObject?,
+        material: Any?,
     ) {
         val rec = registry[id] ?: return
+        val previous = rec.json.optJSONObject("data")?.opt("material")
         rec.json.getJSONObject("data").put("material", material ?: JSONObject.NULL)
-        if (material != null) {
-            applyMaterial(rec, material)
-        } else {
+        val next = Scene3dShadow.overrides(material)
+        if (next.isEmpty()) {
             // Clearing an override restores the asset-authored factors.
             // gltfio material instances have no readback for the originals,
             // so recreate the instance from the shared asset — cheap next to
             // an asset load, and exactly what "keep what the asset authored"
             // means.
             rebuildModelInstance(rec)
+        } else if (rec.overridden && !covers(Scene3dShadow.overrides(previous), next)) {
+            // Whole-value replace semantics: a (scope, parameter) pair the
+            // new override no longer touches must return to its
+            // asset-authored value, and only a fresh instance has those —
+            // rebuild, then buildModel re-applies the stored new override.
+            rebuildModelInstance(rec)
+        } else {
+            applyMaterial(rec, material)
         }
     }
+
+    // The new override keeps in-place application safe iff every previously
+    // overridden (scope, parameter) pair is still set: same-scope entry
+    // present with a superset of the non-null parameters. Conservative on
+    // purpose — overlap analysis across different scopes would need
+    // instance-name knowledge the hot path shouldn't pay for.
+    private fun covers(
+        old: List<JSONObject>,
+        new: List<JSONObject>,
+    ): Boolean =
+        old.all { previous ->
+            val scope = Scene3dShadow.scopeOf(previous)
+            val replacement = new.firstOrNull { Scene3dShadow.scopeOf(it) == scope }
+            replacement != null &&
+                paramNames(previous).all { it in paramNames(replacement) }
+        }
+
+    private fun paramNames(override: JSONObject): List<String> =
+        listOf("base_color", "metallic", "roughness", "emissive").filter { !override.isNull(it) }
 
     private fun setAnimation(
         id: String,
@@ -1380,9 +1468,10 @@ class Scene3dView(
         rec.instance = instance
         rec.assetRef = ref
         rec.overridden = false
+        rec.materialState = null
         val tm = engine.transformManager
         tm.setParent(tm.getInstance(instance.root), tm.getInstance(rec.entity))
-        data.optJSONObject("material")?.let { applyMaterial(rec, it) }
+        if (!data.isNull("material")) applyMaterial(rec, data.opt("material"))
         // Reconcile the declared animation with the (possibly fresh)
         // instance: same play_id keeps its clock across a material-clear
         // rebuild; a new entity starts from seek ?: 0.
@@ -1438,6 +1527,7 @@ class Scene3dView(
         // Structural teardown (replace/remove): the clip identity dies with
         // the data payload; a replacement entity re-resolves from its json.
         rec.anim = null
+        rec.materialState = null
         rec.instance?.let { instance ->
             if (rec.inScene) scene.removeEntities(instance.entities)
             rec.inScene = false
@@ -1480,39 +1570,74 @@ class Scene3dView(
         applyVisibility(rec)
     }
 
+    // Apply an override (single object or array of scoped overrides) to the
+    // instance's material instances. scope == null hits every instance
+    // (pre-scope behaviour); a named scope hits only instances whose glTF
+    // material name matches (gltfio carries the authored name onto each
+    // MaterialInstance). A named scope matching nothing is the async half
+    // of the unknown_material honesty: an error event to the owner AND an
+    // error marker in the readback — never a silently unstyled model.
     private fun applyMaterial(
         rec: Rec,
-        material: JSONObject,
+        material: Any?,
     ) {
         val instance = rec.instance ?: return
-        rec.overridden = true
-        for (mi in instance.materialInstances) {
-            material.optJSONArray("base_color")?.let {
-                if (mi.material.hasParameter("baseColorFactor")) {
-                    mi.setParameter(
-                        "baseColorFactor",
-                        it.getDouble(0).toFloat(),
-                        it.getDouble(1).toFloat(),
-                        it.getDouble(2).toFloat(),
-                        it.getDouble(3).toFloat(),
-                    )
+        val id = rec.json.getString("id")
+        val state = JSONArray()
+        for (override in Scene3dShadow.overrides(material)) {
+            val scope = Scene3dShadow.scopeOf(override)
+            val targets = instance.materialInstances.filter { scope == null || it.name == scope }
+            val entry = JSONObject().put("scope", scope ?: JSONObject.NULL)
+            if (scope != null && targets.isEmpty()) {
+                entry.put("error", "unknown_material")
+                state.put(entry)
+                val owner = Scene3dRuntime.ownerPid(viewportId)
+                if (owner != 0L) {
+                    val error = JSONArray().put("unknown_material").put(id).put(scope)
+                    MobScene3dBridge.nativeDeliverScene3d(owner, "error", viewportId, error.toString(), "")
                 }
+                continue
             }
-            if (!material.isNull("metallic") && mi.material.hasParameter("metallicFactor")) {
-                mi.setParameter("metallicFactor", material.getDouble("metallic").toFloat())
+            rec.overridden = true
+            for (mi in targets) applyOverrideParams(mi, override)
+            entry.put("applied", JSONArray(paramNames(override)))
+            val names = JSONArray()
+            targets.forEach { names.put(it.name) }
+            entry.put("instances", names)
+            state.put(entry)
+        }
+        rec.materialState = state
+    }
+
+    private fun applyOverrideParams(
+        mi: MaterialInstance,
+        material: JSONObject,
+    ) {
+        material.optJSONArray("base_color")?.let {
+            if (mi.material.hasParameter("baseColorFactor")) {
+                mi.setParameter(
+                    "baseColorFactor",
+                    it.getDouble(0).toFloat(),
+                    it.getDouble(1).toFloat(),
+                    it.getDouble(2).toFloat(),
+                    it.getDouble(3).toFloat(),
+                )
             }
-            if (!material.isNull("roughness") && mi.material.hasParameter("roughnessFactor")) {
-                mi.setParameter("roughnessFactor", material.getDouble("roughness").toFloat())
-            }
-            material.optJSONArray("emissive")?.let {
-                if (mi.material.hasParameter("emissiveFactor")) {
-                    mi.setParameter(
-                        "emissiveFactor",
-                        it.getDouble(0).toFloat(),
-                        it.getDouble(1).toFloat(),
-                        it.getDouble(2).toFloat(),
-                    )
-                }
+        }
+        if (!material.isNull("metallic") && mi.material.hasParameter("metallicFactor")) {
+            mi.setParameter("metallicFactor", material.getDouble("metallic").toFloat())
+        }
+        if (!material.isNull("roughness") && mi.material.hasParameter("roughnessFactor")) {
+            mi.setParameter("roughnessFactor", material.getDouble("roughness").toFloat())
+        }
+        material.optJSONArray("emissive")?.let {
+            if (mi.material.hasParameter("emissiveFactor")) {
+                mi.setParameter(
+                    "emissiveFactor",
+                    it.getDouble(0).toFloat(),
+                    it.getDouble(1).toFloat(),
+                    it.getDouble(2).toFloat(),
+                )
             }
         }
     }
@@ -1545,6 +1670,11 @@ class Scene3dView(
                 List(animator.animationCount) { animator.getAnimationName(it) }
             }
         Scene3dRuntime.registerAssetAnimations(path, names)
+        // Publish the glTF material names too, so unknown material scopes
+        // reject synchronously once the asset is loaded.
+        val materialNames =
+            instances[0]?.materialInstances?.map { it.name }?.distinct() ?: emptyList()
+        Scene3dRuntime.registerAssetMaterials(path, materialNames)
         return entry
     }
 
@@ -1655,6 +1785,12 @@ class Scene3dView(
                         .put("loop", st.loop)
                 }
                 entity.put("animation_state", animState)
+            }
+            rec.materialState?.let { state ->
+                // Applied override truth (which scopes matched which glTF
+                // material instances) — data.material above is the mirrored
+                // intent; this is what the applier actually did.
+                if (state.length() > 0) entity.put("material_state", state)
             }
             // World transforms of the instance's NAMED glTF nodes: animation
             // retargets nodes inside the asset, so post-settle orientations

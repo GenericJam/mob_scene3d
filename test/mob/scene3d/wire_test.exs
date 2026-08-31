@@ -129,6 +129,58 @@ defmodule Mob.Scene3d.WireTest do
              ] = wire_ops
     end
 
+    test "a single material override carries its scope (null = all instances)" do
+      [[_, _, material]] =
+        [{:set_material, "probe", %Material{base_color: {1, 0, 0, 1}}}]
+        |> Wire.encode_patch()
+        |> Wire.decode!()
+        |> Map.fetch!("ops")
+
+      assert material["scope"] == nil
+      assert material["base_color"] == [1.0, 0.0, 0.0, 1.0]
+
+      [[_, _, scoped]] =
+        [{:set_material, "pawn", %Material{base_color: {1, 0, 0, 1}, scope: "pawn_body"}}]
+        |> Wire.encode_patch()
+        |> Wire.decode!()
+        |> Map.fetch!("ops")
+
+      assert scoped["scope"] == "pawn_body"
+    end
+
+    test "a material override list encodes as a JSON array of objects" do
+      materials = [
+        %Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"},
+        %Material{emissive: {0.2, 0.2, 0.0}, scope: "pawn_accent"}
+      ]
+
+      [[_, _, wire_materials]] =
+        [{:set_material, "pawn", materials}]
+        |> Wire.encode_patch()
+        |> Wire.decode!()
+        |> Map.fetch!("ops")
+
+      assert [
+               %{"scope" => "pawn_body", "base_color" => [0.9, 0.3, 0.1, 1.0]},
+               %{"scope" => "pawn_accent", "emissive" => [0.2, 0.2, 0.0]}
+             ] = wire_materials
+    end
+
+    test "a scoped list inside an entity payload rides data.material" do
+      model = %Model{
+        asset: "pawn.glb",
+        material: [%Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"}]
+      }
+
+      [["add_entity", entity]] =
+        [{:add_entity, %Entity{id: "pawn", data: model}}]
+        |> Wire.encode_patch()
+        |> Wire.decode!()
+        |> Map.fetch!("ops")
+
+      assert [%{"scope" => "pawn_body"}] = entity["data"]["material"]
+    end
+
     test "integer components encode as floats on the wire" do
       [[_, _, transform]] =
         [{:set_transform, "x", %Transform{position: {1, 0, -4}}}]
@@ -155,7 +207,9 @@ defmodule Mob.Scene3d.WireTest do
         {~s(["structural_field","a","light_type"]), {:structural_field, "a", :light_type}},
         {~s(["bad_asset","x.glb","enoent"]), {:bad_asset, "x.glb", "enoent"}},
         {~s(["unknown_animation","a","spin"]), {:unknown_animation, "a", "spin"}},
+        {~s(["unknown_material","pawn","bogus"]), {:unknown_material, "pawn", "bogus"}},
         {~s(["unsupported","animation"]), {:unsupported, :animation}},
+        {~s(["unsupported","material_scope"]), {:unsupported, :material_scope}},
         {~s(["no_viewport","scene"]), {:no_viewport, "scene"}}
       ]
 
@@ -184,9 +238,26 @@ defmodule Mob.Scene3d.WireTest do
       refute MapSet.member?(ops, "set_light")
     end
 
+    test "caps without a features key decode as the empty feature set" do
+      assert {:ok, %{features: features}} =
+               Wire.decode_caps(~s({"schema":1,"ops":["add_entity"]}))
+
+      assert features == MapSet.new()
+    end
+
+    test "declared features decode into the set" do
+      assert {:ok, %{features: features}} =
+               Wire.decode_caps(
+                 ~s({"schema":1,"ops":["add_entity"],"features":["material_scope"]})
+               )
+
+      assert MapSet.member?(features, "material_scope")
+    end
+
     test "malformed caps are honest errors" do
       assert {:error, {:bad_caps, _}} = Wire.decode_caps(~s({"schema":"one"}))
       assert {:error, {:bad_caps, _}} = Wire.decode_caps("junk")
+      assert {:error, {:bad_caps, _}} = Wire.decode_caps(~s({"schema":1,"ops":[],"features":1}))
     end
   end
 end

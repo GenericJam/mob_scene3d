@@ -28,7 +28,7 @@ static NSString *const kCapsJson =
     @"entity\","
     @"\"set_parent\",\"set_transform\",\"set_visible\",\"set_pickable\","
     @"\"set_material\",\"set_animation\",\"set_camera\",\"set_light\","
-    @"\"set_environment\"]}";
+    @"\"set_environment\"],\"features\":[\"material_scope\"]}";
 
 @implementation MobScene3dDrain
 @end
@@ -102,6 +102,27 @@ void MobScene3dRegisterAssetAnimations(NSString *assetPath,
   [s3d_lock() unlock];
 }
 
+// Asset path -> glTF material names, the animation registry's twin: lets the
+// BEAM-thread shadow reject an unknown material-override scope synchronously
+// once the asset is loaded; before that the render thread re-checks and
+// errors asynchronously.
+static NSMutableDictionary<NSString *, NSArray<NSString *> *> *
+s3d_asset_materials(void) {
+  static NSMutableDictionary *map = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    map = [NSMutableDictionary dictionary];
+  });
+  return map;
+}
+
+void MobScene3dRegisterAssetMaterials(NSString *assetPath,
+                                      NSArray<NSString *> *names) {
+  [s3d_lock() lock];
+  s3d_asset_materials()[assetPath] = [names copy];
+  [s3d_lock() unlock];
+}
+
 // ── Shadow semantics (mirrors Mob.Scene3d.IR.Patch, the Elixir reference) ──
 
 static NSArray *s3d_err(NSArray<NSString *> *args) { return args; }
@@ -142,6 +163,55 @@ static NSArray *_Nullable s3d_animation_error(NSDictionary *entity) {
   if (known == nil || [known containsObject:name])
     return nil;
   return s3d_err(@[ @"unknown_animation", entity[@"id"] ?: @"", name ]);
+}
+
+/// Normalize a wire material override — a single object (scope nil = every
+/// instance, the pre-scope wire shape) or an array of scoped overrides —
+/// to an array of override dictionaries. Anything else is "no override".
+static NSArray<NSDictionary *> *s3d_material_overrides(id _Nullable material) {
+  if ([material isKindOfClass:[NSDictionary class]])
+    return @[ material ];
+  if ([material isKindOfClass:[NSArray class]]) {
+    NSMutableArray *overrides = [NSMutableArray array];
+    for (id entry in (NSArray *)material) {
+      if ([entry isKindOfClass:[NSDictionary class]])
+        [overrides addObject:entry];
+    }
+    return overrides;
+  }
+  return @[];
+}
+
+/// The scope of one override entry: a glTF material name, or nil = all.
+static NSString *_Nullable s3d_scope_of(NSDictionary *override) {
+  id scope = override[@"scope"];
+  return [scope isKindOfClass:[NSString class]] ? scope : nil;
+}
+
+/// Unknown material-override scopes reject synchronously when the asset's
+/// material names are already registered (loaded by the render thread); an
+/// asset still loading validates render-side instead and errors
+/// asynchronously — the animation-name two-tier honesty, applied to
+/// materials. Caller holds s3d_lock().
+static NSArray *_Nullable s3d_material_error(NSDictionary *entity) {
+  id data = entity[@"data"];
+  if (![data isKindOfClass:[NSDictionary class]])
+    return nil;
+  if (![s3d_kind_of(entity) isEqualToString:@"model"])
+    return nil;
+  id asset = ((NSDictionary *)data)[@"asset"];
+  if (![asset isKindOfClass:[NSString class]])
+    return nil;
+  NSArray<NSString *> *known = s3d_asset_materials()[asset];
+  if (known == nil)
+    return nil;
+  for (NSDictionary *override in s3d_material_overrides(
+           ((NSDictionary *)data)[@"material"])) {
+    NSString *scope = s3d_scope_of(override);
+    if (scope != nil && ![known containsObject:scope])
+      return s3d_err(@[ @"unknown_material", entity[@"id"] ?: @"", scope ]);
+  }
+  return nil;
 }
 
 static BOOL s3d_cyclic(NSDictionary<NSString *, NSDictionary *> *shadow,
@@ -199,6 +269,9 @@ static NSArray *_Nullable s3d_apply_op(
     NSArray *animError = s3d_animation_error(entity);
     if (animError != nil)
       return animError;
+    NSArray *materialError = s3d_material_error(entity);
+    if (materialError != nil)
+      return materialError;
     if (!replacing)
       [order addObject:eid];
     shadow[eid] = entity;
@@ -244,7 +317,11 @@ static NSArray *_Nullable s3d_apply_op(
   if ([name isEqualToString:@"set_material"]) {
     if (![s3d_kind_of(entity) isEqualToString:@"model"])
       return s3d_err(@[ @"kind_mismatch", eid, @"model" ]);
-    shadow[eid] = s3d_put_data_field(entity, @"material", value);
+    NSDictionary *updated = s3d_put_data_field(entity, @"material", value);
+    NSArray *materialError = s3d_material_error(updated);
+    if (materialError != nil)
+      return materialError;
+    shadow[eid] = updated;
     return nil;
   }
   if ([name isEqualToString:@"set_animation"]) {

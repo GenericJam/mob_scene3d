@@ -21,7 +21,8 @@ defmodule Mob.Scene3d.IR.Patch do
     * `{:set_parent, id, parent | nil}`
     * `{:set_transform, id, transform}` — whole TRS, replace not merge
     * `{:set_visible, id, boolean}` / `{:set_pickable, id, boolean}`
-    * `{:set_material, id, material | nil}` — whole override, replace not merge
+    * `{:set_material, id, material | [material] | nil}` — whole override
+      (single, or a list of scoped overrides), replace not merge
     * `{:set_animation, id, animation | nil}`
     * `{:set_camera, id, camera}` / `{:set_light, id, light}` /
       `{:set_environment, id, environment}`
@@ -49,7 +50,7 @@ defmodule Mob.Scene3d.IR.Patch do
   """
 
   alias Mob.Scene3d.IR
-  alias Mob.Scene3d.IR.{Animation, Camera, Entity, Environment, Light, Material, Model, Transform}
+  alias Mob.Scene3d.IR.{Animation, Camera, Entity, Environment, Light, Model, Transform}
 
   @type op ::
           {:add_entity, Entity.t()}
@@ -59,7 +60,7 @@ defmodule Mob.Scene3d.IR.Patch do
           | {:set_transform, IR.id(), Transform.t()}
           | {:set_visible, IR.id(), boolean()}
           | {:set_pickable, IR.id(), boolean()}
-          | {:set_material, IR.id(), Material.t() | nil}
+          | {:set_material, IR.id(), Model.material_override()}
           | {:set_animation, IR.id(), Animation.t() | nil}
           | {:set_camera, IR.id(), Camera.t()}
           | {:set_light, IR.id(), Light.t()}

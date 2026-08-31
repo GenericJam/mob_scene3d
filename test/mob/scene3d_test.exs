@@ -3,7 +3,7 @@ defmodule Mob.Scene3dTest do
 
   alias Mob.Scene3d
   alias Mob.Scene3d.IR
-  alias Mob.Scene3d.IR.{Camera, Entity, Light, Model, Transform}
+  alias Mob.Scene3d.IR.{Camera, Entity, Light, Material, Model, Transform}
   alias Mob.Scene3d.NativeMock
   alias Mob.Scene3d.Wire
 
@@ -123,6 +123,95 @@ defmodule Mob.Scene3dTest do
 
       assert {:error, {:unsupported, :set_animation}} = Scene3d.commit("vp", committed, animated)
       refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
+    end
+
+    test "a scoped override against an applier without material_scope degrades loudly" do
+      # The exact skew this lane creates: an old native build whose caps
+      # predate scoped overrides would silently tint EVERY material instance
+      # (the bug scoping exists to fix), so the guard refuses before the
+      # wire. Feature support is ADDITIVE (declared via caps features,
+      # schema and op set unchanged).
+      pre_scope_caps =
+        %{"schema" => Wire.schema(), "ops" => Wire.v1_op_names()}
+        |> :json.encode()
+        |> IO.iodata_to_binary()
+
+      NativeMock.stub(:caps, {:ok, pre_scope_caps})
+
+      committed = probe_scene()
+
+      tinted =
+        update_in(committed.entities["probe"], fn %Entity{data: %Model{} = model} = probe ->
+          material = %Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"}
+          %Entity{probe | data: %Model{model | material: material}}
+        end)
+
+      assert {:error, {:unsupported, :material_scope}} = Scene3d.commit("vp", committed, tinted)
+      refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
+    end
+
+    test "an override list needs material_scope even inside an entity payload" do
+      pre_scope_caps =
+        %{"schema" => Wire.schema(), "ops" => Wire.v1_op_names()}
+        |> :json.encode()
+        |> IO.iodata_to_binary()
+
+      NativeMock.stub(:caps, {:ok, pre_scope_caps})
+
+      pawn =
+        IR.new([
+          %Entity{
+            id: "pawn",
+            data: %Model{
+              asset: "pawn.glb",
+              material: [%Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"}]
+            }
+          }
+        ])
+
+      assert {:error, {:unsupported, :material_scope}} = Scene3d.commit("vp", IR.empty(), pawn)
+      refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
+    end
+
+    test "an unscoped override still ships against pre-scope caps" do
+      # Back-compat: scope nil is today's wire shape and semantics — an old
+      # applier handles it correctly, so the guard must not over-refuse.
+      pre_scope_caps =
+        %{"schema" => Wire.schema(), "ops" => Wire.v1_op_names()}
+        |> :json.encode()
+        |> IO.iodata_to_binary()
+
+      NativeMock.stub(:caps, {:ok, pre_scope_caps})
+
+      committed = probe_scene()
+
+      tinted =
+        update_in(committed.entities["probe"], fn %Entity{data: %Model{} = model} = probe ->
+          %Entity{probe | data: %Model{model | material: %Material{base_color: {1, 0, 0, 1}}}}
+        end)
+
+      assert {:ok, _committed} = Scene3d.commit("vp", committed, tinted)
+      assert [["set_material", "probe", %{"scope" => nil}]] = NativeMock.shipped_ops()
+    end
+
+    test "a scoped override list ships once the applier declares material_scope" do
+      committed = probe_scene()
+
+      tinted =
+        update_in(committed.entities["probe"], fn %Entity{data: %Model{} = model} = probe ->
+          materials = [
+            %Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"},
+            %Material{emissive: {0.2, 0.2, 0.0}, scope: "pawn_accent"}
+          ]
+
+          %Entity{probe | data: %Model{model | material: materials}}
+        end)
+
+      # The default mock caps declare material_scope (the shipping caps).
+      assert {:ok, _committed} = Scene3d.commit("vp", committed, tinted)
+
+      assert [["set_material", "probe", [%{"scope" => "pawn_body"}, %{"scope" => "pawn_accent"}]]] =
+               NativeMock.shipped_ops()
     end
 
     test "a schema mismatch is refused loudly" do

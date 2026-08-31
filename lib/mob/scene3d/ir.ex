@@ -85,10 +85,31 @@ defmodule Mob.Scene3d.IR.Material do
   silently-ignored extra keys — see the decision record's version-skew
   section.
 
+  ## Scope
+
+  `scope: nil` (the default) applies the override to **every** material
+  instance of the model's asset — the original behaviour. `scope: "name"`
+  applies it only to material instances whose glTF material name matches
+  (gltfio carries the authored name onto each `MaterialInstance`), so a
+  two-material asset can tint one material and leave the other authored —
+  the Chopaat two-tone pawn: `pawn_body` takes the player color,
+  `pawn_accent` stays ivory (bead `mob_scene3d-bqc`).
+
+  A scope name the loaded asset doesn't have is an honest error,
+  `{:unknown_material, entity_id, name}` — rejected synchronously once the
+  asset's material names are registered natively, asynchronously (via
+  `{:scene3d_error, ...}`) when the check races the asset load, exactly the
+  two-tier honesty unknown animation names have. Scoped overrides require
+  the native `"material_scope"` capability; against an older applier the
+  commit degrades loudly with `{:unsupported, :material_scope}`.
+
+  Multiple simultaneous overrides ride `Model.material` as a **list** of
+  `%Material{}` with distinct, non-nil scopes.
+
   All color components are linear floats `0.0..1.0` (glTF factor semantics).
   """
 
-  defstruct base_color: nil, metallic: nil, roughness: nil, emissive: nil
+  defstruct base_color: nil, metallic: nil, roughness: nil, emissive: nil, scope: nil
 
   @type rgba :: {number(), number(), number(), number()}
   @type rgb :: {number(), number(), number()}
@@ -96,7 +117,8 @@ defmodule Mob.Scene3d.IR.Material do
           base_color: rgba() | nil,
           metallic: number() | nil,
           roughness: number() | nil,
-          emissive: rgb() | nil
+          emissive: rgb() | nil,
+          scope: String.t() | nil
         }
 
   @doc false
@@ -114,6 +136,9 @@ defmodule Mob.Scene3d.IR.Material do
 
       not (is_nil(material.emissive) or rgb?(material.emissive)) ->
         {:error, {:invalid_emissive, material.emissive}}
+
+      not (is_nil(material.scope) or (is_binary(material.scope) and material.scope != "")) ->
+        {:error, {:invalid_scope, material.scope}}
 
       true ->
         :ok
@@ -197,14 +222,26 @@ defmodule Mob.Scene3d.IR.Model do
   changing it is a remove-and-recreate on the native side, expressed as a
   `:replace_entity` in the patch grammar. `material` and `animation` are
   per-frame.
+
+  `material` takes a single `%Material{}` (scope `nil` = all instances,
+  scope `"name"` = only that glTF material) or a **list** of `%Material{}`
+  for multiple simultaneous scoped overrides — e.g. tint `pawn_body` while
+  giving `pawn_accent` an emissive. In list form every entry's scope must
+  be a distinct, non-nil material name (an unscoped override is the
+  standalone form; mixing it into a list would make apply order
+  load-bearing, which whole-value replace semantics forbid).
   """
+
+  alias Mob.Scene3d.IR.Material
 
   @enforce_keys [:asset]
   defstruct [:asset, material: nil, animation: nil]
 
+  @type material_override :: Material.t() | [Material.t()] | nil
+
   @type t :: %__MODULE__{
           asset: String.t(),
-          material: Mob.Scene3d.IR.Material.t() | nil,
+          material: material_override(),
           animation: Mob.Scene3d.IR.Animation.t() | nil
         }
 
@@ -223,7 +260,25 @@ defmodule Mob.Scene3d.IR.Model do
   defp validate_asset(asset), do: {:error, {:invalid_asset, asset}}
 
   defp validate_material(nil), do: :ok
-  defp validate_material(material), do: Mob.Scene3d.IR.Material.validate(material)
+  defp validate_material(%Material{} = material), do: Material.validate(material)
+  defp validate_material([]), do: {:error, :empty_material_list}
+  defp validate_material(materials) when is_list(materials), do: validate_list(materials, [])
+  defp validate_material(other), do: {:error, {:invalid_material, other}}
+
+  # List form: each entry valid, every scope a non-nil name, scopes distinct.
+  defp validate_list([], _seen), do: :ok
+
+  defp validate_list([%Material{} = material | rest], seen) do
+    with :ok <- Material.validate(material) do
+      cond do
+        is_nil(material.scope) -> {:error, :unscoped_material_in_list}
+        material.scope in seen -> {:error, {:duplicate_material_scope, material.scope}}
+        true -> validate_list(rest, [material.scope | seen])
+      end
+    end
+  end
+
+  defp validate_list([other | _rest], _seen), do: {:error, {:invalid_material, other}}
 
   defp validate_animation(nil), do: :ok
   defp validate_animation(animation), do: Mob.Scene3d.IR.Animation.validate(animation)

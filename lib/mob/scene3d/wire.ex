@@ -132,12 +132,21 @@ defmodule Mob.Scene3d.Wire do
 
   defp material_json(nil), do: nil
 
+  # A list of scoped overrides encodes as a JSON array of material objects
+  # (order preserved; scopes are distinct per IR validation, so order is not
+  # semantic). List form and non-nil scopes both require the native
+  # "material_scope" capability — Mob.Scene3d.guard_ops enforces that before
+  # anything is encoded.
+  defp material_json(materials) when is_list(materials),
+    do: Enum.map(materials, &material_json/1)
+
   defp material_json(%Material{} = material) do
     %{
       "base_color" => maybe_tuple_json(material.base_color),
       "metallic" => material.metallic,
       "roughness" => material.roughness,
-      "emissive" => maybe_tuple_json(material.emissive)
+      "emissive" => maybe_tuple_json(material.emissive),
+      "scope" => material.scope
     }
   end
 
@@ -198,6 +207,7 @@ defmodule Mob.Scene3d.Wire do
     "invalid_result" => :invalid_result,
     "bad_asset" => :bad_asset,
     "unknown_animation" => :unknown_animation,
+    "unknown_material" => :unknown_material,
     "no_entity_at_point" => :no_entity_at_point,
     "unsupported" => :unsupported,
     "no_viewport" => :no_viewport,
@@ -215,7 +225,8 @@ defmodule Mob.Scene3d.Wire do
     "light" => :light,
     "environment" => :environment,
     "group" => :group,
-    "animation" => :animation
+    "animation" => :animation,
+    "material_scope" => :material_scope
   }
 
   @doc """
@@ -277,15 +288,41 @@ defmodule Mob.Scene3d.Wire do
   @doc """
   Decode the native `scene3d_caps` reply for the version-skew guard.
 
+  `"features"` is the additive capability list for grammar extensions that
+  ride existing ops (e.g. `"material_scope"` — scoped/multi material
+  overrides inside `set_material` and entity payloads). Older native halves
+  don't send the key; it decodes as the empty set, and the guard degrades
+  loudly (`{:unsupported, :material_scope}`), never silently.
+
       iex> Mob.Scene3d.Wire.decode_caps(~s({"schema":1,"ops":["add_entity"]}))
-      {:ok, %{schema: 1, ops: MapSet.new(["add_entity"])}}
+      {:ok, %{schema: 1, ops: MapSet.new(["add_entity"]), features: MapSet.new()}}
+
+      iex> {:ok, %{features: features}} =
+      ...>   Mob.Scene3d.Wire.decode_caps(
+      ...>     ~s({"schema":1,"ops":[],"features":["material_scope"]})
+      ...>   )
+      iex> MapSet.member?(features, "material_scope")
+      true
   """
   @spec decode_caps(binary()) ::
-          {:ok, %{schema: pos_integer(), ops: MapSet.t(String.t())}} | {:error, term()}
+          {:ok,
+           %{
+             schema: pos_integer(),
+             ops: MapSet.t(String.t()),
+             features: MapSet.t(String.t())
+           }}
+          | {:error, term()}
   def decode_caps(json) when is_binary(json) do
     case safe_decode(json) do
-      {:ok, %{"schema" => schema, "ops" => ops}} when is_integer(schema) and is_list(ops) ->
-        {:ok, %{schema: schema, ops: MapSet.new(ops)}}
+      {:ok, %{"schema" => schema, "ops" => ops} = caps}
+      when is_integer(schema) and is_list(ops) ->
+        case Map.get(caps, "features", []) do
+          features when is_list(features) ->
+            {:ok, %{schema: schema, ops: MapSet.new(ops), features: MapSet.new(features)}}
+
+          _other ->
+            {:error, {:bad_caps, caps}}
+        end
 
       {:ok, other} ->
         {:error, {:bad_caps, other}}

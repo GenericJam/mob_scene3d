@@ -39,7 +39,11 @@ defmodule Mob.Scene3d.NativeMock do
 
     default =
       {:ok,
-       %{"schema" => Wire.schema(), "ops" => Wire.v1_op_names()}
+       %{
+         "schema" => Wire.schema(),
+         "ops" => Wire.v1_op_names(),
+         "features" => ["material_scope"]
+       }
        |> :json.encode()
        |> IO.iodata_to_binary()}
 

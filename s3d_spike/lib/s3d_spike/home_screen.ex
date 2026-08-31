@@ -36,6 +36,8 @@ defmodule S3dSpike.HomeScreen do
         {nav_button("Scene IR (plugin)",   :open_scene_ir)}
         <Spacer size={12} />
         {nav_button("Tumble (animation)",  :open_tumble)}
+        <Spacer size={12} />
+        {nav_button("Pawn (scoped material)", :open_pawn)}
         {plugin_section(assigns.plugin_screens)}
         <Spacer size={32} />
         <Text text="Theme" text_size={:sm} text_color={:muted} padding={4} />
@@ -98,6 +100,10 @@ defmodule S3dSpike.HomeScreen do
 
   def handle_info({:tap, :open_tumble}, socket) do
     {:noreply, Mob.Socket.push_screen(socket, S3dSpike.TumbleScreen)}
+  end
+
+  def handle_info({:tap, :open_pawn}, socket) do
+    {:noreply, Mob.Socket.push_screen(socket, S3dSpike.PawnScreen)}
   end
 
   def handle_info({:tap, :open_scene3d}, socket) do

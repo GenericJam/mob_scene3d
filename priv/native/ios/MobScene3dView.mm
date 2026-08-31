@@ -102,6 +102,10 @@ struct S3dRec {
   std::string status = "ready";
   std::string statusDetail;
   std::optional<S3dAnimState> anim;
+  // Applied material-override truth for scene/1 readback: one entry per
+  // override (scope, applied params, matched instance names, or an
+  // unknown_material error marker). Nil = no override applied.
+  NSArray *materialState = nil;
 };
 
 struct S3dAssetEntry {
@@ -122,6 +126,70 @@ NSString *kindOf(NSDictionary *entity) {
     return @"group";
   NSString *kind = ((NSDictionary *)data)[@"kind"];
   return [kind isKindOfClass:[NSString class]] ? kind : @"group";
+}
+
+/// Normalize a wire material override — a single object (scope nil = every
+/// instance, the pre-scope wire shape) or an array of scoped overrides — to
+/// an array of override dictionaries. Anything else is "no override".
+NSArray<NSDictionary *> *s3dOverrides(id material) {
+  if ([material isKindOfClass:[NSDictionary class]])
+    return @[ material ];
+  if ([material isKindOfClass:[NSArray class]]) {
+    NSMutableArray *overrides = [NSMutableArray array];
+    for (id entry in (NSArray *)material) {
+      if ([entry isKindOfClass:[NSDictionary class]])
+        [overrides addObject:entry];
+    }
+    return overrides;
+  }
+  return @[];
+}
+
+/// The scope of one override entry: a glTF material name, or nil = all.
+NSString *s3dScopeOf(NSDictionary *override) {
+  id scope = override[@"scope"];
+  return [scope isKindOfClass:[NSString class]] ? scope : nil;
+}
+
+/// The parameter names one override entry actually sets.
+NSArray<NSString *> *s3dParamNames(NSDictionary *override) {
+  NSMutableArray *params = [NSMutableArray array];
+  for (NSString *key in
+       @[ @"base_color", @"metallic", @"roughness", @"emissive" ]) {
+    if (!jnull(override[key]))
+      [params addObject:key];
+  }
+  return params;
+}
+
+/// True when the new override keeps every previously overridden
+/// (scope, parameter) pair set — the condition for in-place application;
+/// anything vacated must return to asset-authored values, which only a
+/// fresh instance has. Conservative: matches entries by identical scope.
+bool s3dCovers(NSArray<NSDictionary *> *old,
+               NSArray<NSDictionary *> *replacementOverrides) {
+  for (NSDictionary *previous in old) {
+    NSString *scope = s3dScopeOf(previous);
+    NSDictionary *replacement = nil;
+    for (NSDictionary *candidate in replacementOverrides) {
+      NSString *candidateScope = s3dScopeOf(candidate);
+      bool sameScope = (scope == nil && candidateScope == nil) ||
+                       (scope != nil && candidateScope != nil &&
+                        [scope isEqualToString:candidateScope]);
+      if (sameScope) {
+        replacement = candidate;
+        break;
+      }
+    }
+    if (replacement == nil)
+      return false;
+    NSArray<NSString *> *replacementParams = s3dParamNames(replacement);
+    for (NSString *param in s3dParamNames(previous)) {
+      if (![replacementParams containsObject:param])
+        return false;
+    }
+  }
+  return true;
 }
 
 /// A JSON string literal (quotes included) for embedding in a reply.
@@ -695,11 +763,12 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   rec->instance = instance;
   rec->assetRef = std::string(ref.UTF8String);
   rec->overridden = false;
+  rec->materialState = nil;
   TransformManager &tm = _engine->getTransformManager();
   tm.setParent(tm.getInstance(instance->getRoot()),
                tm.getInstance(rec->entity));
-  NSDictionary *material = data[@"material"];
-  if ([material isKindOfClass:[NSDictionary class]])
+  id material = data[@"material"];
+  if (!jnull(material))
     [self applyMaterial:rec material:material];
   // Reconcile the declared animation with the (possibly fresh) instance:
   // same play_id keeps its clock across a material-clear rebuild; a new
@@ -754,6 +823,7 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   // Structural teardown (replace/remove): the clip identity dies with the
   // data payload; a replacement entity re-resolves from its json.
   rec->anim.reset();
+  rec->materialState = nil;
   if (rec->instance != nullptr) {
     if (rec->inScene) {
       _scene->removeEntities(rec->instance->getEntities(),
@@ -795,53 +865,106 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   S3dRec *rec = [self rec:entityId];
   if (rec == nullptr)
     return;
-  NSMutableDictionary *data =
-      [((NSDictionary *)rec->json[@"data"]) mutableCopy];
+  NSDictionary *currentData = rec->json[@"data"];
+  id previous = [currentData isKindOfClass:[NSDictionary class]]
+                    ? currentData[@"material"]
+                    : nil;
+  NSMutableDictionary *data = [currentData mutableCopy];
   data[@"material"] = material ?: [NSNull null];
   rec->json[@"data"] = data;
-  if ([material isKindOfClass:[NSDictionary class]]) {
-    [self applyMaterial:rec material:material];
-  } else {
+  NSArray<NSDictionary *> *next = s3dOverrides(material);
+  if (next.count == 0) {
     // Clearing an override restores asset-authored factors: recreate the
     // instance from the shared asset (no readback exists for the originals).
     [self rebuildModelInstance:rec entityId:entityId];
+  } else if (rec->overridden && !s3dCovers(s3dOverrides(previous), next)) {
+    // Whole-value replace semantics: a (scope, parameter) pair the new
+    // override no longer touches must return to its asset-authored value,
+    // and only a fresh instance has those — rebuild, then buildModel
+    // re-applies the stored new override.
+    [self rebuildModelInstance:rec entityId:entityId];
+  } else {
+    [self applyMaterial:rec material:material];
   }
 }
 
-- (void)applyMaterial:(S3dRec *)rec material:(NSDictionary *)material {
+// Apply an override (single object or array of scoped overrides) to the
+// instance's material instances. scope == nil hits every instance (the
+// pre-scope behaviour); a named scope hits only instances whose glTF
+// material name matches (gltfio carries the authored name onto each
+// MaterialInstance). A named scope matching nothing is the async half of
+// the unknown_material honesty: an error event to the owner AND an error
+// marker in the readback — never a silently unstyled model.
+- (void)applyMaterial:(S3dRec *)rec material:(id)material {
   if (rec->instance == nullptr)
     return;
-  rec->overridden = true;
+  NSString *entityId = rec->json[@"id"];
   MaterialInstance *const *instances = rec->instance->getMaterialInstances();
   size_t count = rec->instance->getMaterialInstanceCount();
-  for (size_t i = 0; i < count; i++) {
-    MaterialInstance *mi = instances[i];
-    NSArray *baseColor = material[@"base_color"];
-    if ([baseColor isKindOfClass:[NSArray class]] &&
-        mi->getMaterial()->hasParameter("baseColorFactor")) {
-      mi->setParameter("baseColorFactor", float4{(float)jnum(baseColor[0], 1),
-                                                 (float)jnum(baseColor[1], 1),
-                                                 (float)jnum(baseColor[2], 1),
-                                                 (float)jnum(baseColor[3], 1)});
+  NSMutableArray *state = [NSMutableArray array];
+  for (NSDictionary *override in s3dOverrides(material)) {
+    NSString *scope = s3dScopeOf(override);
+    std::vector<MaterialInstance *> targets;
+    for (size_t i = 0; i < count; i++) {
+      MaterialInstance *mi = instances[i];
+      const char *name = mi->getName();
+      if (scope == nil ||
+          (name != nullptr && strcmp(name, scope.UTF8String) == 0)) {
+        targets.push_back(mi);
+      }
     }
-    if (!jnull(material[@"metallic"]) &&
-        mi->getMaterial()->hasParameter("metallicFactor")) {
-      mi->setParameter("metallicFactor", (float)jnum(material[@"metallic"], 0));
+    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    entry[@"scope"] = scope ?: [NSNull null];
+    if (scope != nil && targets.empty()) {
+      entry[@"error"] = @"unknown_material";
+      [state addObject:entry];
+      NSString *error = [NSString
+          stringWithFormat:@"[\"unknown_material\",%@,%@]",
+                           s3d_json_string(entityId), s3d_json_string(scope)];
+      MobScene3dDeliverError(self.viewportId, error);
+      continue;
     }
-    if (!jnull(material[@"roughness"]) &&
-        mi->getMaterial()->hasParameter("roughnessFactor")) {
-      mi->setParameter("roughnessFactor",
-                       (float)jnum(material[@"roughness"], 1));
+    rec->overridden = true;
+    for (MaterialInstance *mi : targets)
+      [self applyOverrideParams:mi material:override];
+    entry[@"applied"] = s3dParamNames(override);
+    NSMutableArray *names = [NSMutableArray array];
+    for (MaterialInstance *mi : targets) {
+      const char *name = mi->getName();
+      [names addObject:name != nullptr ? @(name) : @""];
     }
-    NSArray *emissive = material[@"emissive"];
-    if ([emissive isKindOfClass:[NSArray class]] &&
-        mi->getMaterial()->hasParameter("emissiveFactor")) {
-      // float3, matching what gltfio's own asset loading sets (and the
-      // Kotlin twin's 3-float overload).
-      mi->setParameter("emissiveFactor", float3{(float)jnum(emissive[0], 0),
-                                                (float)jnum(emissive[1], 0),
-                                                (float)jnum(emissive[2], 0)});
-    }
+    entry[@"instances"] = names;
+    [state addObject:entry];
+  }
+  rec->materialState = state;
+}
+
+- (void)applyOverrideParams:(MaterialInstance *)mi
+                   material:(NSDictionary *)material {
+  NSArray *baseColor = material[@"base_color"];
+  if ([baseColor isKindOfClass:[NSArray class]] &&
+      mi->getMaterial()->hasParameter("baseColorFactor")) {
+    mi->setParameter("baseColorFactor", float4{(float)jnum(baseColor[0], 1),
+                                               (float)jnum(baseColor[1], 1),
+                                               (float)jnum(baseColor[2], 1),
+                                               (float)jnum(baseColor[3], 1)});
+  }
+  if (!jnull(material[@"metallic"]) &&
+      mi->getMaterial()->hasParameter("metallicFactor")) {
+    mi->setParameter("metallicFactor", (float)jnum(material[@"metallic"], 0));
+  }
+  if (!jnull(material[@"roughness"]) &&
+      mi->getMaterial()->hasParameter("roughnessFactor")) {
+    mi->setParameter("roughnessFactor", (float)jnum(material[@"roughness"], 1));
+  }
+  NSArray *emissive = material[@"emissive"];
+  if ([emissive isKindOfClass:[NSArray class]] &&
+      mi->getMaterial()->hasParameter("emissiveFactor")) {
+    // float3, matching what gltfio's own asset loading sets (and the
+    // Kotlin twin's 3-float overload).
+    mi->setParameter("emissiveFactor", float3{(float)jnum(emissive[0], 0),
+                                              (float)jnum(emissive[1], 0),
+                                              (float)jnum(emissive[2], 0)});
   }
 }
 
@@ -1175,6 +1298,19 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
     }
   }
   MobScene3dRegisterAssetAnimations(path, clipNames);
+  // Publish the glTF material names too, so unknown material scopes reject
+  // synchronously once the asset is loaded.
+  NSMutableArray<NSString *> *materialNames = [NSMutableArray array];
+  if (first != nullptr) {
+    MaterialInstance *const *materials = first->getMaterialInstances();
+    for (size_t i = 0; i < first->getMaterialInstanceCount(); i++) {
+      const char *name = materials[i]->getName();
+      NSString *materialName = name != nullptr ? @(name) : @"";
+      if (![materialNames containsObject:materialName])
+        [materialNames addObject:materialName];
+    }
+  }
+  MobScene3dRegisterAssetMaterials(path, materialNames);
   return &inserted->second;
 }
 
@@ -1212,6 +1348,12 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
         animState[@"loop"] = @(st.loop);
       }
       entity[@"animation_state"] = animState;
+    }
+    if (rec.materialState != nil && rec.materialState.count > 0) {
+      // Applied override truth (which scopes matched which glTF material
+      // instances) — data.material above is the mirrored intent; this is
+      // what the applier actually did.
+      entity[@"material_state"] = rec.materialState;
     }
     // World transforms of the instance's NAMED glTF nodes: animation
     // retargets nodes inside the asset, so post-settle orientations (the

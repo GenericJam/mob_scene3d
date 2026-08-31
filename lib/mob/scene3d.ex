@@ -127,10 +127,21 @@ defmodule Mob.Scene3d do
   end
 
   @doc """
-  The native applier capabilities: `{:ok, %{schema: n, ops: MapSet}}`, or
-  `{:error, :nif_not_loaded}` on a BEAM without the native half.
+  The native applier capabilities:
+  `{:ok, %{schema: n, ops: MapSet, features: MapSet}}`, or
+  `{:error, :nif_not_loaded}` on a BEAM without the native half. `features`
+  declares additive grammar extensions riding existing ops (currently
+  `"material_scope"`); absent on older native halves, decoding as the empty
+  set.
   """
-  @spec caps() :: {:ok, %{schema: pos_integer(), ops: MapSet.t(String.t())}} | {:error, term()}
+  @spec caps() ::
+          {:ok,
+           %{
+             schema: pos_integer(),
+             ops: MapSet.t(String.t()),
+             features: MapSet.t(String.t())
+           }}
+          | {:error, term()}
   def caps do
     with {:ok, json} <- Native.impl().caps() do
       Wire.decode_caps(json)
@@ -165,6 +176,13 @@ defmodule Mob.Scene3d do
       "time", "done", "paused", "loop"}` read from the applier's clip clock,
       or `%{"name", "play_id", "error" => "unknown_animation"}` when the
       clip name is not in the asset
+    * `"material_state"` (models with an applied material override) — one
+      entry per override, applied truth from the applier: `%{"scope" =>
+      name | nil, "applied" => [param names], "instances" => [matched glTF
+      material names]}`, or `%{"scope" => name, "error" =>
+      "unknown_material"}` when a scope name missed every material instance
+      — so an agent can assert a scoped tint touched `pawn_body` and left
+      `pawn_accent` alone without sampling a pixel
     * `"nodes"` (models) — `%{node_name => [16 floats]}` world transforms of
       the instance's *named* glTF nodes, so post-settle orientations of
       animation-retargeted nodes are assertable (the Chopaat contract)
@@ -387,9 +405,13 @@ defmodule Mob.Scene3d do
   end
 
   # Version-skew guard: every op in the patch must be declared by the native
-  # caps, and the wire schema must agree. Loud errors, never silent drops.
+  # caps, the wire schema must agree, and grammar extensions riding existing
+  # ops (scoped material overrides) must be declared as features. Loud
+  # errors, never silent drops — an old applier would silently tint every
+  # material instance (the exact bug scoping exists to fix), so the guard
+  # refuses before anything is encoded.
   defp guard_ops(ops) do
-    with {:ok, %{schema: schema, ops: supported}} <- caps() do
+    with {:ok, %{schema: schema, ops: supported, features: features}} <- caps() do
       cond do
         schema != Wire.schema() ->
           {:error, {:schema_mismatch, schema, Wire.schema()}}
@@ -397,11 +419,30 @@ defmodule Mob.Scene3d do
         missing = Enum.find(ops, &(not MapSet.member?(supported, Wire.op_name(&1)))) ->
           {:error, {:unsupported, elem(missing, 0)}}
 
+        Enum.any?(ops, &scoped_material_op?/1) and
+            not MapSet.member?(features, "material_scope") ->
+          {:error, {:unsupported, :material_scope}}
+
         true ->
           :ok
       end
     end
   end
+
+  # Ops that need the "material_scope" native capability: any material
+  # override in list form, or any single override with a non-nil scope —
+  # whether it rides set_material or an add/replace entity payload.
+  defp scoped_material_op?({:set_material, _id, material}), do: scoped_material?(material)
+
+  defp scoped_material_op?({tag, %Entity{data: %Model{material: material}}})
+       when tag in [:add_entity, :replace_entity],
+       do: scoped_material?(material)
+
+  defp scoped_material_op?(_op), do: false
+
+  defp scoped_material?(materials) when is_list(materials), do: true
+  defp scoped_material?(%IR.Material{scope: scope}), do: not is_nil(scope)
+  defp scoped_material?(_other), do: false
 
   defp ship(viewport_id, ops) do
     patch = ops |> Enum.map(&resolve_op_assets/1) |> Wire.encode_patch()

@@ -52,6 +52,13 @@ void MobScene3dDeliverReady(NSString *viewportId);
 void MobScene3dRegisterAssetAnimations(NSString *assetPath,
                                        NSArray<NSString *> *names);
 
+/// Renderer → runtime: the glTF material names of a loaded .glb, keyed by
+/// the resolved asset path, so unknown material-override scopes reject
+/// synchronously once the asset is known (the animation-name twin). Main
+/// thread; the runtime copies under its lock.
+void MobScene3dRegisterAssetMaterials(NSString *assetPath,
+                                      NSArray<NSString *> *names);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2,7 +2,7 @@ defmodule Mob.Scene3d.IRTest do
   use ExUnit.Case, async: true
 
   alias Mob.Scene3d.IR
-  alias Mob.Scene3d.IR.{Camera, Entity, Environment, Light, Model, Transform}
+  alias Mob.Scene3d.IR.{Camera, Entity, Environment, Light, Material, Model, Transform}
 
   doctest Mob.Scene3d.IR
   doctest Mob.Scene3d.IR.Transform
@@ -86,6 +86,77 @@ defmodule Mob.Scene3d.IRTest do
         ])
 
       assert IR.validate(ir) == :ok
+    end
+  end
+
+  defp pawn(material) do
+    IR.new([%Entity{id: "pawn", data: %Model{asset: "pawn.glb", material: material}}])
+  end
+
+  describe "validate/1 — scoped material overrides" do
+    test "accepts a single scoped override" do
+      material = %Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"}
+      assert IR.validate(pawn(material)) == :ok
+    end
+
+    test "accepts a list of distinct scoped overrides" do
+      materials = [
+        %Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"},
+        %Material{emissive: {0.2, 0.2, 0.0}, scope: "pawn_accent"}
+      ]
+
+      assert IR.validate(pawn(materials)) == :ok
+    end
+
+    test "rejects an empty scope name" do
+      material = %Material{base_color: {1.0, 1.0, 1.0, 1.0}, scope: ""}
+
+      assert IR.validate(pawn(material)) ==
+               {:error, {:invalid_entity, "pawn", {:invalid_scope, ""}}}
+    end
+
+    test "rejects a non-binary scope" do
+      material = %Material{scope: :pawn_body}
+
+      assert IR.validate(pawn(material)) ==
+               {:error, {:invalid_entity, "pawn", {:invalid_scope, :pawn_body}}}
+    end
+
+    test "rejects an empty override list" do
+      assert IR.validate(pawn([])) ==
+               {:error, {:invalid_entity, "pawn", :empty_material_list}}
+    end
+
+    test "rejects an unscoped override inside a list" do
+      materials = [
+        %Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"},
+        %Material{roughness: 0.5}
+      ]
+
+      assert IR.validate(pawn(materials)) ==
+               {:error, {:invalid_entity, "pawn", :unscoped_material_in_list}}
+    end
+
+    test "rejects duplicate scopes in a list" do
+      materials = [
+        %Material{base_color: {0.9, 0.3, 0.1, 1.0}, scope: "pawn_body"},
+        %Material{roughness: 0.5, scope: "pawn_body"}
+      ]
+
+      assert IR.validate(pawn(materials)) ==
+               {:error, {:invalid_entity, "pawn", {:duplicate_material_scope, "pawn_body"}}}
+    end
+
+    test "rejects an invalid entry inside a list, first problem wins" do
+      materials = [%Material{metallic: 2.0, scope: "pawn_body"}]
+
+      assert IR.validate(pawn(materials)) ==
+               {:error, {:invalid_entity, "pawn", {:metallic_out_of_range, 2.0}}}
+    end
+
+    test "rejects a non-material inside a list" do
+      assert IR.validate(pawn([:not_a_material])) ==
+               {:error, {:invalid_entity, "pawn", {:invalid_material, :not_a_material}}}
     end
   end
 
