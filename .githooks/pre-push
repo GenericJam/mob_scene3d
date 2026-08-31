@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# .githooks/pre-push — mob_scene3d pre-push gate (the mob-repo two-tier
+# pattern; see mob's .githooks/pre-push and AGENTS.md → Gates).
+#
+# Activated per-clone (and per-worktree) with:
+#   git config core.hooksPath .githooks
+# `mix setup` does this for you.
+#
+# Two tiers of check:
+#
+#   ALWAYS (cheap, sub-10s):
+#     mix format --check-formatted
+#     mix credo --strict
+#     mix compile --warnings-as-errors
+#
+#   ONLY WHEN mix.exs CHANGED IN THIS PUSH (release preflight):
+#     mix test
+#
+# Intentionally NOT in the always-tier: the full test suite. It's a
+# 30-60s wait per push and that's exactly what teaches people to reach
+# for --no-verify. CI runs the suite on every push regardless; this
+# hook is here to catch the 80% of breaks that the fast checks find.
+set -euo pipefail
+
+cheap_checks() {
+    echo "[pre-push] format..."
+    mix format --check-formatted
+
+    echo "[pre-push] credo..."
+    mix credo --strict
+
+    echo "[pre-push] compile (--warnings-as-errors)..."
+    mix compile --warnings-as-errors
+}
+
+release_preflight() {
+    echo "[pre-push] mix.exs changed → running release preflight..."
+    mix test
+}
+
+# git invokes pre-push with no args but pipes
+#   <local_ref> <local_sha> <remote_ref> <remote_sha>
+# on stdin, one line per ref being pushed. We diff the local sha
+# against the remote sha to see what mix.exs looks like in this push.
+zero=0000000000000000000000000000000000000000
+mix_exs_changed=false
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Branch deletion (local_sha all zeros) → nothing to diff.
+    [ "$local_sha" = "$zero" ] && continue
+
+    if [ "$remote_sha" = "$zero" ]; then
+        # New branch on the remote — diff against origin/master so we
+        # don't try to scan an open-ended commit range.
+        range="origin/master..$local_sha"
+    else
+        range="$remote_sha..$local_sha"
+    fi
+
+    if git diff --name-only "$range" 2>/dev/null | grep -qx 'mix.exs'; then
+        mix_exs_changed=true
+    fi
+done
+
+cheap_checks
+
+if [ "$mix_exs_changed" = "true" ]; then
+    release_preflight
+fi
+
+echo "[pre-push] ✓ all checks passed"
