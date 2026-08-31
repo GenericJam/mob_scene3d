@@ -10,6 +10,6 @@
   lifecycle: [],
   styles: [%{name: :mob_themes, theme: MobThemes.Obsidian}],
   default_style: :mob_themes,
-  default_font: nil,
-  composites: []
+  composites: [],
+  default_font: nil
 }
