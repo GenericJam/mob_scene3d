@@ -42,6 +42,8 @@ defmodule MobScene3d.MixProject do
       # Wired in via .credo.exs as `plugins: [{ExSlop, []}]`, mirroring mob.
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      # Erlang formatting for src/ (the NIF stub) — the AGENTS.md gate.
+      {:erlfmt, "~> 1.3", only: [:dev, :test], runtime: false},
       # Property tests: the patch grammar is locked by
       # apply(a, diff(a, b)) == b round-trips over generated scenes.
       {:stream_data, "~> 1.1", only: [:dev, :test]}
