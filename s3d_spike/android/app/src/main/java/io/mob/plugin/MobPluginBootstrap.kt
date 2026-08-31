@@ -11,7 +11,11 @@ object MobPluginBootstrap {
     private val permissionProviders = mutableListOf<MobPermissionProvider>()
 
     @JvmStatic
-    fun registerAll(activity: Activity) {}
+    fun registerAll(activity: Activity) {
+        io.mob.scene3d.MobScene3dBridge.register()
+        handOff(io.mob.scene3d.MobScene3dBridge, activity)
+        collectPermissionProvider(io.mob.scene3d.MobScene3dBridge)
+    }
 
     // Returns the first plugin-supplied Android permission mapping for `cap`,
     // or null if no activated plugin provides this capability. Core
@@ -23,5 +27,19 @@ object MobPluginBootstrap {
             if (perms != null) return perms
         }
         return null
+    }
+
+    // Hands the Activity to a bridge that opts in via MobActivityAware.
+    private fun handOff(bridge: Any, activity: Activity) {
+        (bridge as? MobActivityAware)?.setActivity(activity)
+    }
+
+    // Records a bridge that opts in via MobPermissionProvider so core
+    // MobBridge.request_permission can fall through to it for a capability
+    // core no longer knows about.
+    private fun collectPermissionProvider(bridge: Any) {
+        (bridge as? MobPermissionProvider)?.let {
+            if (!permissionProviders.contains(it)) permissionProviders.add(it)
+        }
     }
 }

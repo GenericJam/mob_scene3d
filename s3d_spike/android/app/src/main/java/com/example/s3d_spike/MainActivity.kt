@@ -153,6 +153,13 @@ class MainActivity : ComponentActivity() {
         // native 3D view factory before setContent, like any tier-2 plugin.
         Scene3dFilamentPlugin.register()
 
+        // mob_scene3d plugin viewport (manifest host_requirements: Android
+        // has no ui_components codegen yet, so the host registers the
+        // composable — MobNativeViewRegistry lives in the app package).
+        MobNativeViewRegistry.register("Mob_Scene3d_Viewport") { props, _send ->
+            io.mob.scene3d.MobScene3dViewport(props)
+        }
+
         // Forward launcher-supplied env vars into the BEAM process. Set BEFORE
         // nativeStartBeam below so the BEAM (and Mob.Dist in particular) sees
         // them when it reads getenv()/System.get_env/1.
