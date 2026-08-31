@@ -22,6 +22,8 @@ defmodule S3dSpike.MixProject do
     [
       {:mob, path: "/Users/kevin/code/mob", override: true},
       {:mob_dev, path: "/Users/kevin/code/mob_dev", only: :dev, runtime: false},
+      # The plugin under development (this repo).
+      {:mob_scene3d, path: "..", override: true},
       {:ecto_sqlite3, "~> 0.18"},
       # Showcase plugins — each ships a demo screen the home auto-lists, so a
       # fresh app demonstrates real device capabilities out of the box. Remove

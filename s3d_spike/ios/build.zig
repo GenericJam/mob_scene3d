@@ -132,6 +132,10 @@ pub fn build(b: *std.Build) void {
     swift_run.addArg(b.fmt("{s}/S3dSpike-Bridging-Header.h", .{project_ios_dir}));
     swift_run.addArg("-Xcc");
     swift_run.addArg(b.fmt("-I{s}/ios", .{mob_dir}));
+    // mob_scene3d plugin headers (host_requirements): the bridging header
+    // imports MobScene3dView.h / MobScene3dRuntime.h from the plugin dep.
+    swift_run.addArg("-Xcc");
+    swift_run.addArg(b.fmt("-I{s}/../../priv/native/ios", .{project_ios_dir}));
     swift_run.addArg("-I");
     swift_run.addArg(b.fmt("{s}/ios", .{mob_dir}));
     swift_run.addArgs(&.{ "-parse-as-library", "-wmo" });
@@ -283,26 +287,35 @@ pub fn build(b: *std.Build) void {
     // as Filament requires. Headers come from the vendored release artifacts
     // (ios/vendor/filament — populated by scripts/fetch_filament_ios.sh).
     {
-        const mm_run = b.addSystemCommand(&.{
-            "xcrun",
-            "-sdk",
-            "iphonesimulator",
-            "cc",
-            "-arch",
-            "arm64",
-            "-mios-simulator-version-min=17.0",
-            "-std=gnu++17",
-            "-Os",
-            "-ffunction-sections",
-            "-fdata-sections",
-            "-fobjc-arc",
-        });
-        mm_run.addArg(b.fmt("-I{s}/vendor/filament/include", .{project_ios_dir}));
-        mm_run.addArg(b.fmt("-isysroot{s}", .{sdkroot}));
-        mm_run.addArg("-c");
-        mm_run.addFileArg(.{ .cwd_relative = b.fmt("{s}/Scene3dFilamentView.mm", .{project_ios_dir}) });
-        mm_run.addArg("-o");
-        installAndCollect(b, objects_step, &objs, mm_run.addOutputFileArg("Scene3dFilamentView.o"), "Scene3dFilamentView.o");
+        // Two ObjC++ renderers: the spike's Scene3dFilamentView.mm (project)
+        // and the mob_scene3d plugin's MobScene3dView.mm (host_requirements —
+        // no manifest key for ObjC++-with-vendored-includes yet, landmine 6).
+        const mm_sources = [_][2][]const u8{
+            .{ b.fmt("{s}/Scene3dFilamentView.mm", .{project_ios_dir}), "Scene3dFilamentView.o" },
+            .{ b.fmt("{s}/../../priv/native/ios/MobScene3dView.mm", .{project_ios_dir}), "MobScene3dView.o" },
+        };
+        for (mm_sources) |src| {
+            const mm_run = b.addSystemCommand(&.{
+                "xcrun",
+                "-sdk",
+                "iphonesimulator",
+                "cc",
+                "-arch",
+                "arm64",
+                "-mios-simulator-version-min=17.0",
+                "-std=gnu++17",
+                "-Os",
+                "-ffunction-sections",
+                "-fdata-sections",
+                "-fobjc-arc",
+            });
+            mm_run.addArg(b.fmt("-I{s}/vendor/filament/include", .{project_ios_dir}));
+            mm_run.addArg(b.fmt("-isysroot{s}", .{sdkroot}));
+            mm_run.addArg("-c");
+            mm_run.addFileArg(.{ .cwd_relative = src[0] });
+            mm_run.addArg("-o");
+            installAndCollect(b, objects_step, &objs, mm_run.addOutputFileArg(src[1]), src[1]);
+        }
     }
 
     // --- Project-side C NIFs (auto-wired from mob.exs :static_nifs) ───────────

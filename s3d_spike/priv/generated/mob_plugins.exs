@@ -3,13 +3,13 @@
 # The activated plugins' tier-3/4 contributions, read at boot by Mob.Plugins.
 # Regenerated whenever `config :mob, :plugins` changes (the deploy/regen hook).
 %{
-  nifs: [],
-  lifecycle: [],
-  composites: [],
-  default_font: nil,
-  default_style: :mob_themes,
-  notification_handlers: [],
-  screens: [],
+  nifs: [:mob_scene3d_nif],
   settings: [],
-  styles: [%{name: :mob_themes, theme: MobThemes.Obsidian}]
+  screens: [],
+  notification_handlers: [],
+  lifecycle: [],
+  styles: [%{name: :mob_themes, theme: MobThemes.Obsidian}],
+  default_style: :mob_themes,
+  default_font: nil,
+  composites: []
 }

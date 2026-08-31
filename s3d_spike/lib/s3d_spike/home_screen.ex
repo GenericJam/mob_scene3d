@@ -32,6 +32,8 @@ defmodule S3dSpike.HomeScreen do
         {nav_button("Storage",             :open_storage)}
         <Spacer size={12} />
         {nav_button("3D Scene (Filament)", :open_scene3d)}
+        <Spacer size={12} />
+        {nav_button("Scene IR (plugin)",   :open_scene_ir)}
         {plugin_section(assigns.plugin_screens)}
         <Spacer size={32} />
         <Text text="Theme" text_size={:sm} text_color={:muted} padding={4} />
@@ -86,6 +88,10 @@ defmodule S3dSpike.HomeScreen do
 
   def handle_info({:tap, :open_dice}, socket) do
     {:noreply, Mob.Socket.push_screen(socket, S3dSpike.DiceScreen)}
+  end
+
+  def handle_info({:tap, :open_scene_ir}, socket) do
+    {:noreply, Mob.Socket.push_screen(socket, S3dSpike.SceneIrScreen)}
   end
 
   def handle_info({:tap, :open_scene3d}, socket) do

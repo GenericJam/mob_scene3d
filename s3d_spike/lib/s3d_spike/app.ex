@@ -22,6 +22,13 @@ defmodule S3dSpike.App do
     # for those specific hostnames here too. Both paths compose.
     Mob.DNS.configure_pure_beam()
 
+    # mob_scene3d asset root. Set at runtime, not in config/config.exs: the
+    # on-device BEAM boots without applying Mix config as application env,
+    # so config.exs values are invisible here (verified: even :mob, :repo
+    # reads nil on device). Runtime put_env is the reliable path until the
+    # asset-pipeline bead (mob_scene3d-392) settles the final story.
+    Application.put_env(:mob_scene3d, :asset_root, {:s3d_spike, "priv/scene3d_assets"})
+
     {:ok, _} = Application.ensure_all_started(:ecto_sqlite3)
     {:ok, _} = S3dSpike.Repo.start_link()
 

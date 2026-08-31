@@ -112,7 +112,16 @@ pub fn build(b: *std.Build) void {
         module_name,
         "-import-objc-header",
     });
-    swift_run.addArg(b.fmt("{s}/ios/MobDemo-Bridging-Header.h", .{mob_dir}));
+    // The project bridging header wraps mob's and adds the Filament views'
+    // ObjC interfaces (spike + mob_scene3d plugin); mob's header resolves via
+    // the -Xcc -I clang-importer paths below. Same shape as the sim build.
+    swift_run.addArg(b.fmt("{s}/S3dSpike-Bridging-Header.h", .{project_ios_dir}));
+    swift_run.addArg("-Xcc");
+    swift_run.addArg(b.fmt("-I{s}/ios", .{mob_dir}));
+    swift_run.addArg("-Xcc");
+    swift_run.addArg(b.fmt("-I{s}/../../priv/native/ios", .{project_ios_dir}));
+    swift_run.addArg("-Xcc");
+    swift_run.addArg(b.fmt("-I{s}", .{project_ios_dir}));
     swift_run.addArg("-I");
     swift_run.addArg(b.fmt("{s}/ios", .{mob_dir}));
     swift_run.addArgs(&.{ "-parse-as-library", "-wmo" });
@@ -255,6 +264,43 @@ pub fn build(b: *std.Build) void {
             .erts_vsn = erts_vsn,
             .sdkroot = sdkroot,
         }), b.fmt("{s}.o", .{spec.name}));
+    }
+
+    // --- Filament ObjC++ renderers (device slices) ------------------------------
+    // Apple clang via xcrun (Filament headers need real C++17 + ObjC ARC).
+    // Two renderers: the spike's Scene3dFilamentView.mm (project) and the
+    // mob_scene3d plugin's MobScene3dView.mm (manifest host_requirements —
+    // no manifest key for ObjC++-with-vendored-includes yet, landmine 6).
+    // Device flavor of the sim build's block: iphoneos SDK,
+    // -miphoneos-version-min, device sdkroot; shadows stay ON (the
+    // TARGET_OS_SIMULATOR gate in the source is compile-time).
+    {
+        const mm_sources = [_][2][]const u8{
+            .{ b.fmt("{s}/Scene3dFilamentView.mm", .{project_ios_dir}), "Scene3dFilamentView.o" },
+            .{ b.fmt("{s}/../../priv/native/ios/MobScene3dView.mm", .{project_ios_dir}), "MobScene3dView.o" },
+        };
+        for (mm_sources) |src| {
+            const mm_run = b.addSystemCommand(&.{
+                "xcrun",
+                "-sdk",
+                "iphoneos",
+                "cc",
+                "-arch",
+                "arm64",
+                "-miphoneos-version-min=17.0",
+                "-std=gnu++17",
+                "-Os",
+                "-ffunction-sections",
+                "-fdata-sections",
+                "-fobjc-arc",
+            });
+            mm_run.addArg(b.fmt("-I{s}/vendor/filament/include", .{project_ios_dir}));
+            mm_run.addArg(b.fmt("-isysroot{s}", .{sdkroot}));
+            mm_run.addArg("-c");
+            mm_run.addFileArg(.{ .cwd_relative = src[0] });
+            mm_run.addArg("-o");
+            installAndCollect(b, objects_step, &objs, mm_run.addOutputFileArg(src[1]), src[1]);
+        }
     }
 
     // --- EPMD (in-process, NO_DAEMON) ──────────────────────────────────────────
@@ -418,6 +464,7 @@ pub fn build(b: *std.Build) void {
         .project_rust_libs = project_rust_libs,
         .plugin_static_libs = plugin_static_libs,
         .plugin_frameworks = plugin_frameworks,
+        .filament_lib_dir = b.fmt("{s}/vendor/filament/lib", .{project_ios_dir}),
         .objects = objs.items,
     });
 }
@@ -631,6 +678,8 @@ const LinkOptions = struct {
     plugin_static_libs: []const u8 = "",
     // Plugin-contributed extra iOS frameworks (comma-separated).
     plugin_frameworks: []const u8 = "",
+    // Dir holding the vendored Filament xcframeworks (fetch_filament_ios.sh).
+    filament_lib_dir: []const u8 = "",
     objects: []const std.Build.LazyPath,
 };
 
@@ -718,6 +767,30 @@ fn addLink(b: *std.Build, step: *std.Build.Step, opts: LinkOptions) void {
             const lp: std.Build.LazyPath = .{ .cwd_relative = lib_path };
             run.addFileArg(lp);
         }
+    }
+
+    // Filament static archives — the DEVICE (ios-arm64) slices of the
+    // release xcframeworks. addFileArg so the cache key tracks archive
+    // contents. OTP's libzstd.a above already satisfies zstd symbols;
+    // Filament's is listed after it and only fills gaps. Mirrors the sim
+    // build's block with the other slice.
+    if (opts.filament_lib_dir.len > 0) {
+        const filament_libs = [_][]const u8{
+            "filament",      "backend",     "filabridge", "filaflat",
+            "utils",         "geometry",    "smol-v",     "ibl",
+            "image",         "gltfio_core", "ktxreader",  "basis_transcoder",
+            "meshoptimizer", "dracodec",    "uberarchive", "uberzlib",
+            "stb",           "zstd",        "perfetto",   "abseil",
+        };
+        for (filament_libs) |lib| {
+            const lp: std.Build.LazyPath = .{ .cwd_relative = b.fmt(
+                "{s}/lib{s}.xcframework/ios-arm64/lib{s}.a",
+                .{ opts.filament_lib_dir, lib, lib },
+            ) };
+            run.addFileArg(lp);
+        }
+        run.addArgs(&.{ "-Xlinker", "-framework", "-Xlinker", "Metal" });
+        run.addArgs(&.{ "-Xlinker", "-framework", "-Xlinker", "CoreVideo" });
     }
 
     run.addArgs(&.{ "-lz", "-lc++", "-lpthread" });
