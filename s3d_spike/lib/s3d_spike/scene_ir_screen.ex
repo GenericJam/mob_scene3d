@@ -15,16 +15,29 @@ defmodule S3dSpike.SceneIrScreen do
     * `{:s3d, :remove, id}` — drop an entity
     * `{:s3d, :commit_raw, ops}` — bypass the diff and ship raw ops (for
       honest-error probes: unknown ids, bad patches)
+    * `{:s3d, :spin_loop, n}` — per-frame move loop: n renders ~16 ms apart
+      rotating the probe (frame_stats under load)
+    * `{:s3d, :set_pickable, id, bool}` — flip pick participation
 
-  `Mob.Scene3d.scene/1` readback runs via `:rpc` from the host.
+  `Mob.Scene3d.scene/1` readback runs via `:rpc` from the host. Picks on
+  the pickable probe arrive as `{:probe_picked, id}` (the `on_pick:` tag)
+  and accumulate in the `:picks` assign, newest first — readable via
+  `Mob.Test.assigns/1`. The decoy model is `pickable: false`: tapping it
+  must leave `:picks` untouched (the honest-miss ruling).
   """
   use Mob.Screen
 
   alias Mob.Scene3d.IR
-  alias Mob.Scene3d.IR.{Camera, Entity, Light, Model, Transform}
+  alias Mob.Scene3d.IR.{Camera, Entity, Light, Material, Model, Transform}
 
   def mount(_params, _session, socket) do
-    {:ok, Mob.Socket.assign(socket, scene: base_scene(), last_error: nil)}
+    {:ok,
+     Mob.Socket.assign(socket,
+       scene: base_scene(),
+       last_error: nil,
+       picks: [],
+       spin_left: 0
+     )}
   end
 
   def render(assigns) do
@@ -38,7 +51,13 @@ defmodule S3dSpike.SceneIrScreen do
         padding={4}
       />
       <Spacer size={8} />
-      {Mob.Scene3d.viewport(id: :probe_vp, ir: assigns.scene, width: 340, height: 420)}
+      {Mob.Scene3d.viewport(
+        id: :probe_vp,
+        ir: assigns.scene,
+        width: 340,
+        height: 420,
+        on_pick: :probe_picked
+      )}
       <Spacer size={12} />
       <Button id={:back} label="Back" on_tap={{self(), :back}} />
     </Column>
@@ -90,6 +109,41 @@ defmodule S3dSpike.SceneIrScreen do
     {:noreply, socket}
   end
 
+  def handle_info({:probe_picked, entity_id}, socket) do
+    {:noreply, Mob.Socket.assign(socket, picks: [entity_id | socket.assigns.picks])}
+  end
+
+  def handle_info({:s3d, :set_pickable, id, pickable?}, socket) do
+    updater = fn %Entity{} = entity -> %Entity{entity | pickable: pickable?} end
+    {:noreply, update_entity(socket, id, updater)}
+  end
+
+  # Per-frame move loop: one re-render (one commit) every ~16 ms, rotating
+  # the probe 6°/frame — the frame_stats-under-load probe.
+  def handle_info({:s3d, :spin_loop, frames}, socket) when is_integer(frames) do
+    send(self(), :s3d_spin_tick)
+    {:noreply, Mob.Socket.assign(socket, spin_left: frames)}
+  end
+
+  def handle_info(:s3d_spin_tick, socket) do
+    case socket.assigns.spin_left do
+      n when n <= 0 ->
+        {:noreply, socket}
+
+      n ->
+        Process.send_after(self(), :s3d_spin_tick, 16)
+        %Transform{rotation: rotation} = Transform.from_euler({0.0, n * 6.0, 0.0})
+
+        socket =
+          update_entity(socket, "probe", fn %Entity{transform: %Transform{} = transform} =
+                                              entity ->
+            %Entity{entity | transform: %Transform{transform | rotation: rotation}}
+          end)
+
+        {:noreply, Mob.Socket.assign(socket, spin_left: n - 1)}
+    end
+  end
+
   def handle_info({:scene3d_error, viewport_id, error}, socket) do
     {:noreply, Mob.Socket.assign(socket, last_error: {viewport_id, error})}
   end
@@ -128,10 +182,23 @@ defmodule S3dSpike.SceneIrScreen do
         }
       },
       %Entity{id: "rig"},
+      # The pick/sampler target: strongly red-tinted so sample_region's
+      # dominant channel check is unambiguous against the dark blue skybox.
       %Entity{
         id: "probe",
         parent: "rig",
-        transform: %Transform{scale: {4.0, 4.0, 4.0}},
+        pickable: true,
+        transform: %Transform{position: {-0.3, 0.0, 0.0}, scale: {4.0, 4.0, 4.0}},
+        data: %Model{
+          asset: "probe.glb",
+          material: %Material{base_color: {0.9, 0.05, 0.05, 1.0}, roughness: 0.8}
+        }
+      },
+      # Same mesh, pickable: false — tapping it must be a miss (no event,
+      # pick/3 → {:no_entity_at_point, x, y}).
+      %Entity{
+        id: "decoy",
+        transform: %Transform{position: {0.3, 0.0, 0.0}, scale: {4.0, 4.0, 4.0}},
         data: %Model{asset: "probe.glb"}
       }
     ])

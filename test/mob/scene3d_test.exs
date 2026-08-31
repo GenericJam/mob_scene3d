@@ -149,6 +149,153 @@ defmodule Mob.Scene3dTest do
     end
   end
 
+  describe "pick/4 (device-local)" do
+    test "resolves to the picked entity id" do
+      NativeMock.stub(:pick, fn viewport_id, query_json ->
+        query = Wire.decode!(query_json)
+        assert query["x"] == 120.0
+        assert query["y"] == 200.0
+        send(self(), {:scene3d_pick, viewport_id, query["request_id"], ~s({"entity":"probe"})})
+        {:ok, ~s({"ok":true})}
+      end)
+
+      assert {:ok, "probe"} = Scene3d.pick("vp", 120, 200)
+    end
+
+    test "a miss is the documented honest error, echoing the query point" do
+      NativeMock.stub(:pick, fn viewport_id, query_json ->
+        query = Wire.decode!(query_json)
+        send(self(), {:scene3d_pick, viewport_id, query["request_id"], ~s({"miss":true})})
+        {:ok, ~s({"ok":true})}
+      end)
+
+      assert {:error, {:no_entity_at_point, 5, 5}} = Scene3d.pick("vp", 5, 5)
+    end
+
+    test "no attached viewport is a sync taxonomy error" do
+      NativeMock.stub(:pick, {:ok, ~s({"error":["no_viewport","vp"]})})
+      assert {:error, {:no_viewport, "vp"}} = Scene3d.pick("vp", 1, 1)
+    end
+
+    test "an unresolved pick times out honestly" do
+      assert {:error, :timeout} = Scene3d.pick("vp", 1, 1, 20)
+    end
+
+    test "a reply for another request is not consumed" do
+      NativeMock.stub(:pick, fn viewport_id, _query_json ->
+        send(self(), {:scene3d_pick, viewport_id, "stale_req", ~s({"entity":"ghost"})})
+        {:ok, ~s({"ok":true})}
+      end)
+
+      assert {:error, :timeout} = Scene3d.pick("vp", 1, 1, 20)
+      assert_received {:scene3d_pick, "vp", "stale_req", _json}
+    end
+  end
+
+  describe "sample_region/3 (device-local)" do
+    test "reduces the GPU readback through Mob.Test.reduce_rgba/3" do
+      # 2×1 px, both solid red — the reducer shape is Mob.Test's.
+      rgba = <<255, 0, 0, 255, 255, 0, 0, 255>>
+
+      NativeMock.stub(:sample, fn viewport_id, query_json ->
+        query = Wire.decode!(query_json)
+        assert %{"x" => 10.0, "y" => 20.0, "w" => 2.0, "h" => 1.0} = query
+
+        payload =
+          ~s({"width":2,"height":1,"rgba":"#{Base.encode64(rgba)}"})
+
+        send(self(), {:scene3d_sample, viewport_id, query["request_id"], payload})
+        {:ok, ~s({"ok":true})}
+      end)
+
+      assert {:ok, stats} = Scene3d.sample_region("vp", {10, 20, 2, 1})
+
+      assert stats == %{
+               average: 0xFFFF0000,
+               dominant: 0xFFFF0000,
+               dominant_share: 1.0,
+               distinct: 1,
+               pixels: 2
+             }
+    end
+
+    test "an offscreen rect is the taxonomy error, not a zero-pixel guess" do
+      NativeMock.stub(:sample, fn viewport_id, query_json ->
+        query = Wire.decode!(query_json)
+
+        send(
+          self(),
+          {:scene3d_sample, viewport_id, query["request_id"], ~s({"error":["offscreen"]})}
+        )
+
+        {:ok, ~s({"ok":true})}
+      end)
+
+      assert {:error, :offscreen} = Scene3d.sample_region("vp", {-500, -500, 10, 10})
+    end
+
+    test "a readback that does not match its dimensions is refused" do
+      NativeMock.stub(:sample, fn viewport_id, query_json ->
+        query = Wire.decode!(query_json)
+        # claims 4 pixels, carries 1
+        payload = ~s({"width":2,"height":2,"rgba":"#{Base.encode64(<<0, 0, 0, 255>>)}"})
+        send(self(), {:scene3d_sample, viewport_id, query["request_id"], payload})
+        {:ok, ~s({"ok":true})}
+      end)
+
+      assert {:error, :size_mismatch} = Scene3d.sample_region("vp", {0, 0, 2, 2})
+    end
+  end
+
+  describe "frame_stats/2 (device-local)" do
+    test "decodes the render-thread stats with atom keys" do
+      payload =
+        ~s({"frames":118,"avg_ms":16.7,"p95_ms":17.4,"dropped":2,"entities":4,"renderables":1})
+
+      NativeMock.stub(:frame_stats, fn viewport_id, request_id ->
+        send(self(), {:scene3d_frame_stats, viewport_id, request_id, payload})
+        {:ok, ~s({"ok":true})}
+      end)
+
+      assert {:ok, stats} = Scene3d.frame_stats("vp")
+
+      assert stats == %{
+               frames: 118,
+               avg_ms: 16.7,
+               p95_ms: 17.4,
+               dropped: 2,
+               entities: 4,
+               renderables: 1
+             }
+    end
+
+    test "a partial stats payload is a bad reply, never a guess" do
+      NativeMock.stub(:frame_stats, fn viewport_id, request_id ->
+        send(self(), {:scene3d_frame_stats, viewport_id, request_id, ~s({"frames":1})})
+        {:ok, ~s({"ok":true})}
+      end)
+
+      assert {:error, {:bad_native_reply, %{"frames" => 1}}} = Scene3d.frame_stats("vp")
+    end
+
+    test "no attached viewport is a sync taxonomy error" do
+      NativeMock.stub(:frame_stats, {:ok, ~s({"error":["no_viewport","vp"]})})
+      assert {:error, {:no_viewport, "vp"}} = Scene3d.frame_stats("vp")
+    end
+  end
+
+  describe "viewports/0" do
+    test "decodes the attached viewport ids" do
+      NativeMock.stub(:viewports, {:ok, ~s({"viewports":["board","hud"]})})
+      assert {:ok, ["board", "hud"]} = Scene3d.viewports()
+    end
+
+    test "garbage is an error, not a guess" do
+      NativeMock.stub(:viewports, {:ok, ~s({"nope":1})})
+      assert {:error, {:bad_native_reply, %{"nope" => 1}}} = Scene3d.viewports()
+    end
+  end
+
   describe "destroy/1" do
     test "decodes the native reply" do
       assert :ok = Scene3d.destroy("vp")
@@ -162,6 +309,10 @@ defmodule Mob.Scene3dTest do
       assert {:error, :nif_not_loaded} = Mob.Scene3d.Native.NIF.apply_patch("vp", "{}")
       assert {:error, :nif_not_loaded} = Mob.Scene3d.Native.NIF.request_scene("vp", "r")
       assert {:error, :nif_not_loaded} = Mob.Scene3d.Native.NIF.destroy("vp")
+      assert {:error, :nif_not_loaded} = Mob.Scene3d.Native.NIF.pick("vp", "{}")
+      assert {:error, :nif_not_loaded} = Mob.Scene3d.Native.NIF.sample("vp", "{}")
+      assert {:error, :nif_not_loaded} = Mob.Scene3d.Native.NIF.frame_stats("vp", "r")
+      assert {:error, :nif_not_loaded} = Mob.Scene3d.Native.NIF.viewports()
     end
   end
 end

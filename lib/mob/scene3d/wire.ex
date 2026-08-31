@@ -201,7 +201,12 @@ defmodule Mob.Scene3d.Wire do
     "no_entity_at_point" => :no_entity_at_point,
     "unsupported" => :unsupported,
     "no_viewport" => :no_viewport,
-    "bad_patch" => :bad_patch
+    "bad_patch" => :bad_patch,
+    "offscreen" => :offscreen,
+    "empty_region" => :empty_region,
+    "size_mismatch" => :size_mismatch,
+    "bad_query" => :bad_query,
+    "no_surface" => :no_surface
   }
 
   @kind_atoms %{

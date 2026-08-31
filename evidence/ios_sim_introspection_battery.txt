@@ -1,0 +1,77 @@
+==> mob_biometric
+Compiling 1 file (.erl)
+Compiling 2 files (.ex)
+Generated mob_biometric app
+==> mob_themes
+Compiling 6 files (.ex)
+Generated mob_themes app
+connect: true
+screen: S3dSpike.HomeScreen
+screen after nav: S3dSpike.SceneIrScreen
+viewports: {:ok, ["probe_vp"]}
+scene[cam]: %{
+  status: "ready",
+  kind: "camera",
+  pickable: false,
+  world_translation: [0, 0.25, 1.600000023841858]
+}
+scene[decoy]: %{
+  status: "ready",
+  kind: "model",
+  pickable: false,
+  world_translation: [0.30000001192092896, 0, 0]
+}
+scene[probe]: %{
+  status: "ready",
+  kind: "model",
+  pickable: true,
+  world_translation: [-0.30000001192092896, 0, 0]
+}
+scene[rig]: %{status: "ready", kind: "group", pickable: false, world_translation: [0, 0, 0]}
+scene[sun]: %{status: "ready", kind: "light", pickable: false, world_translation: [0, 0, 0]}
+pick probe (62,228): {:ok, "probe"}
+pick decoy (278,228): {:error, {:no_entity_at_point, 278, 228}}
+pick background (170,30): {:error, {:no_entity_at_point, 170, 30}}
+sample probe: {:ok,
+ %{
+   average: 4291770676,
+   distinct: 9,
+   dominant: 4291705140,
+   dominant_share: 0.3488888888888889,
+   pixels: 3600
+ }}
+sample background: {:ok,
+ %{
+   average: 4280691779,
+   distinct: 7,
+   dominant: 4280691779,
+   dominant_share: 0.3038888888888889,
+   pixels: 3600
+ }}
+sample offscreen: {:error, :offscreen}
+frame_stats at rest (2s window): {:ok,
+ %{
+   dropped: 0,
+   frames: 121,
+   avg_ms: 16.667,
+   entities: 5,
+   p95_ms: 16.667,
+   renderables: 3
+ }}
+frame_stats after 120-frame spin loop: {:ok,
+ %{
+   dropped: 0,
+   frames: 151,
+   avg_ms: 16.667,
+   entities: 5,
+   p95_ms: 16.667,
+   renderables: 3
+ }}
+viewport frame: {24.0, 159.0, 340.0, 420.0}
+picks before taps: []
+picks after probe tap: []
+picks after decoy+bg taps (miss = unchanged): []
+scene on unknown viewport: {:error, {:no_viewport, "ghost_vp"}}
+pick on unknown viewport: {:error, {:no_viewport, "ghost_vp"}}
+
+[exited with code 0]

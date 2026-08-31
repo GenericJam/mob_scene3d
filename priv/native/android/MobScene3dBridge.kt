@@ -25,7 +25,12 @@
 package io.mob.scene3d
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.util.Base64
 import android.view.Choreographer
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceView
 import android.view.View.VISIBLE
@@ -44,6 +49,7 @@ import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
 import com.google.android.filament.Skybox
 import com.google.android.filament.SwapChain
+import com.google.android.filament.Texture
 import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.android.UiHelper
@@ -105,6 +111,43 @@ object MobScene3dBridge {
     @JvmStatic
     fun scene3dDestroy(viewportId: ByteArray): ByteArray =
         Scene3dRuntime.destroy(String(viewportId, Charsets.UTF_8)).toByteArray(Charsets.UTF_8)
+
+    @JvmStatic
+    fun scene3dPick(
+        pid: Long,
+        viewportId: ByteArray,
+        query: ByteArray,
+    ): ByteArray =
+        Scene3dRuntime
+            .enqueueQuery(pid, String(viewportId, Charsets.UTF_8), "pick", String(query, Charsets.UTF_8))
+            .toByteArray(Charsets.UTF_8)
+
+    @JvmStatic
+    fun scene3dSample(
+        pid: Long,
+        viewportId: ByteArray,
+        query: ByteArray,
+    ): ByteArray =
+        Scene3dRuntime
+            .enqueueQuery(pid, String(viewportId, Charsets.UTF_8), "sample", String(query, Charsets.UTF_8))
+            .toByteArray(Charsets.UTF_8)
+
+    @JvmStatic
+    fun scene3dFrameStats(
+        pid: Long,
+        viewportId: ByteArray,
+        requestId: ByteArray,
+    ): ByteArray =
+        Scene3dRuntime
+            .enqueueQuery(
+                pid,
+                String(viewportId, Charsets.UTF_8),
+                "stats",
+                JSONObject().put("request_id", String(requestId, Charsets.UTF_8)).toString(),
+            ).toByteArray(Charsets.UTF_8)
+
+    @JvmStatic
+    fun scene3dViewports(): ByteArray = Scene3dRuntime.viewportsJson().toByteArray(Charsets.UTF_8)
 }
 
 // ── Shadow registry + patch validation ─────────────────────────────────────
@@ -136,10 +179,19 @@ object Scene3dRuntime {
         val shadow = LinkedHashMap<String, JSONObject>()
         val pendingOps = ArrayList<JSONArray>()
         val sceneRequests = ArrayList<Pair<Long, String>>()
+        val queries = ArrayList<Query>()
         var ownerPid: Long = 0
         var view: Scene3dView? = null
         var resetRequested = false
     }
+
+    /** One introspection query (pick / sample / stats), drained render-side. */
+    class Query(
+        val kind: String,
+        val pid: Long,
+        val requestId: String,
+        val params: JSONObject,
+    )
 
     private val lock = Any()
     private val viewports = HashMap<String, ViewportState>()
@@ -198,12 +250,44 @@ object Scene3dRuntime {
         return OK
     }
 
+    /** Queue a pick/sample/stats query for the render thread. */
+    fun enqueueQuery(
+        pid: Long,
+        viewportId: String,
+        kind: String,
+        queryJson: String,
+    ): String {
+        val params =
+            try {
+                JSONObject(queryJson)
+            } catch (e: Exception) {
+                return err("bad_query", e.message ?: "parse")
+            }
+        val requestId = params.optString("request_id")
+        if (requestId.isEmpty()) return err("bad_query", "request_id")
+        synchronized(lock) {
+            val state = viewports[viewportId]
+            if (state?.view == null) return err("no_viewport", viewportId)
+            state.queries.add(Query(kind, pid, requestId, params))
+        }
+        return OK
+    }
+
+    fun viewportsJson(): String {
+        val ids = JSONArray()
+        synchronized(lock) {
+            for ((id, state) in viewports) if (state.view != null) ids.put(id)
+        }
+        return JSONObject().put("viewports", ids).toString()
+    }
+
     fun destroy(viewportId: String): String {
         synchronized(lock) {
             val state = viewports[viewportId] ?: return OK
             state.shadow.clear()
             state.pendingOps.clear()
             state.sceneRequests.clear()
+            state.queries.clear()
             state.resetRequested = true
         }
         return OK
@@ -242,20 +326,25 @@ object Scene3dRuntime {
     class Drained(
         val ops: List<JSONArray>,
         val sceneRequests: List<Pair<Long, String>>,
+        val queries: List<Query>,
         val reset: Boolean,
         val ownerPid: Long,
     )
 
     fun drain(viewportId: String): Drained {
         synchronized(lock) {
-            val state = viewports[viewportId] ?: return Drained(emptyList(), emptyList(), false, 0)
+            val state =
+                viewports[viewportId]
+                    ?: return Drained(emptyList(), emptyList(), emptyList(), false, 0)
             val ops = ArrayList(state.pendingOps)
             state.pendingOps.clear()
             val requests = ArrayList(state.sceneRequests)
             state.sceneRequests.clear()
+            val queries = ArrayList(state.queries)
+            state.queries.clear()
             val reset = state.resetRequested
             state.resetRequested = false
-            return Drained(ops, requests, reset, state.ownerPid)
+            return Drained(ops, requests, queries, reset, state.ownerPid)
         }
     }
 
@@ -574,6 +663,39 @@ class Scene3dView(
     private var readySent = false
     private var frameCallbackPosted = false
 
+    // ── introspection state (render thread only) ──────────────────────────
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val density = context.resources.displayMetrics.density
+
+    // Sample queries wait for a frame we actually render: readPixels must
+    // sit between render() and endFrame() to read the swap chain.
+    private val pendingSamples = ArrayDeque<Scene3dRuntime.Query>()
+
+    // Frame timing ring buffer — one delta per Choreographer tick, cheap by
+    // construction. 120 entries ≈ the last two seconds at 60 Hz.
+    private val frameDeltas = DoubleArray(120)
+    private var frameDeltaCount = 0
+    private var frameDeltaIndex = 0
+    private var lastFrameNanos = 0L
+    private var framesSinceQuery = 0
+    private var droppedSinceQuery = 0
+
+    // Tap capture: a single tap inside the viewport rides the same native
+    // pick path pick/3 uses. Hits on pickable models become pick events;
+    // misses are silence (the decision record's honest-miss ruling).
+    private val gestureDetector =
+        GestureDetector(
+            context,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onSingleTapUp(e: MotionEvent): Boolean {
+                    pickAt(e.x.toDouble(), e.y.toDouble(), null)
+                    return true
+                }
+            },
+        )
+
     init {
         view.scene = scene
         view.camera = fallbackCamera
@@ -649,6 +771,7 @@ class Scene3dView(
     override fun doFrame(frameTimeNanos: Long) {
         if (!frameCallbackPosted) return
         choreographer.postFrameCallback(this)
+        recordFrameDelta(frameTimeNanos)
 
         val drained = Scene3dRuntime.drain(viewportId)
         if (drained.reset) clearScene()
@@ -656,12 +779,37 @@ class Scene3dView(
         for ((pid, requestId) in drained.sceneRequests) {
             MobScene3dBridge.nativeDeliverScene3d(pid, "scene", viewportId, requestId, sceneJson())
         }
+        for (query in drained.queries) {
+            when (query.kind) {
+                "pick" -> {
+                    pickAt(
+                        query.params.optDouble("x", 0.0) * density,
+                        query.params.optDouble("y", 0.0) * density,
+                        query,
+                    )
+                }
+
+                "sample" -> {
+                    pendingSamples.addLast(query)
+                }
+
+                "stats" -> {
+                    deliverFrameStats(query)
+                }
+            }
+        }
 
         if (uiHelper.isReadyToRender && swapChain != null &&
             renderer.beginFrame(swapChain!!, frameTimeNanos)
         ) {
             renderer.render(view)
+            // GPU readback rides between render() and endFrame(): that is
+            // the window where the swap chain is readable. Window capture
+            // cannot see this surface at all (the SurfaceView blindspot) —
+            // this IS the pixel-truth path.
+            while (pendingSamples.isNotEmpty()) readbackSample(pendingSamples.removeFirst())
             renderer.endFrame()
+            framesSinceQuery++
             if (!readySent) {
                 readySent = true
                 val owner = Scene3dRuntime.ownerPid(viewportId)
@@ -670,6 +818,182 @@ class Scene3dView(
                 }
             }
         }
+    }
+
+    // ── input: tap → ray pick → {tag, entity} event (bead na8) ────────────
+
+    override fun onTouchEvent(event: MotionEvent): Boolean = gestureDetector.onTouchEvent(event)
+
+    /**
+     * Ray-pick at view-local pixel coords. `query == null` is the touch
+     * path (hit → "pick_event" to the owner; miss → silence). A query gets
+     * an explicit reply either way. Filament picks async on the GPU; the
+     * callback lands on the main thread a frame or two later.
+     */
+    private fun pickAt(
+        xPx: Double,
+        yPx: Double,
+        query: Scene3dRuntime.Query?,
+    ) {
+        // Filament pick coords: viewport pixels, origin bottom-left.
+        val px = Math.round(xPx).toInt()
+        val py = viewportHeight - Math.round(yPx).toInt()
+        view.pick(px, py, mainHandler) { result ->
+            val entityId = resolvePick(result.renderable)
+            if (query != null) {
+                val reply =
+                    if (entityId != null) {
+                        JSONObject().put("entity", entityId)
+                    } else {
+                        JSONObject().put("miss", true)
+                    }
+                MobScene3dBridge.nativeDeliverScene3d(
+                    query.pid,
+                    "pick",
+                    viewportId,
+                    query.requestId,
+                    reply.toString(),
+                )
+            } else if (entityId != null) {
+                val owner = Scene3dRuntime.ownerPid(viewportId)
+                if (owner != 0L) {
+                    MobScene3dBridge.nativeDeliverScene3d(owner, "pick_event", viewportId, entityId, "")
+                }
+            }
+        }
+    }
+
+    /** Picked renderable → owning IR entity id, pickable models only. */
+    private fun resolvePick(renderable: Int): String? {
+        if (renderable == 0) return null
+        for ((id, rec) in registry) {
+            val instance = rec.instance ?: continue
+            if (!rec.json.optBoolean("pickable", false)) continue
+            if (instance.entities.contains(renderable)) return id
+        }
+        return null
+    }
+
+    // ── pixel truth: Filament readPixels over a viewport-local dp rect ────
+
+    private fun readbackSample(query: Scene3dRuntime.Query) {
+        // dp rect → device pixels, clamped to the viewport.
+        val left = Math.round(query.params.optDouble("x", 0.0) * density).toInt()
+        val top = Math.round(query.params.optDouble("y", 0.0) * density).toInt()
+        val right =
+            Math
+                .round((query.params.optDouble("x", 0.0) + query.params.optDouble("w", 0.0)) * density)
+                .toInt()
+        val bottom =
+            Math
+                .round((query.params.optDouble("y", 0.0) + query.params.optDouble("h", 0.0)) * density)
+                .toInt()
+        val x0 = left.coerceIn(0, viewportWidth)
+        val y0 = top.coerceIn(0, viewportHeight)
+        val x1 = right.coerceIn(0, viewportWidth)
+        val y1 = bottom.coerceIn(0, viewportHeight)
+        val w = x1 - x0
+        val h = y1 - y0
+        if (w <= 0 || h <= 0) {
+            deliverQueryError(query, "offscreen")
+            return
+        }
+
+        // readPixels origin is bottom-left (GL convention); rows arrive
+        // bottom-to-top, which the order-invariant stats reduction ignores.
+        val glY = viewportHeight - (y0 + h)
+        val buffer = ByteBuffer.allocateDirect(w * h * 4)
+        val descriptor =
+            Texture.PixelBufferDescriptor(buffer, Texture.Format.RGBA, Texture.Type.UBYTE)
+        descriptor.setCallback(mainHandler) {
+            buffer.rewind()
+            val bytes = ByteArray(buffer.remaining())
+            buffer.get(bytes)
+            // The swap chain's alpha channel is not part of the composited
+            // output (the surface is opaque; GLES leaves it 0) — report the
+            // pixels as displayed: opaque. Keeps 0xAARRGGBB comparisons
+            // against Mob.Test's sampler sane.
+            var alphaIndex = 3
+            while (alphaIndex < bytes.size) {
+                bytes[alphaIndex] = -1
+                alphaIndex += 4
+            }
+            val reply =
+                JSONObject()
+                    .put("width", w)
+                    .put("height", h)
+                    .put("rgba", Base64.encodeToString(bytes, Base64.NO_WRAP))
+            MobScene3dBridge.nativeDeliverScene3d(
+                query.pid,
+                "sample",
+                viewportId,
+                query.requestId,
+                reply.toString(),
+            )
+        }
+        renderer.readPixels(x0, glY, w, h, descriptor)
+    }
+
+    private fun deliverQueryError(
+        query: Scene3dRuntime.Query,
+        vararg reason: String,
+    ) {
+        val error = JSONArray()
+        reason.forEach { error.put(it) }
+        MobScene3dBridge.nativeDeliverScene3d(
+            query.pid,
+            query.kind,
+            viewportId,
+            query.requestId,
+            JSONObject().put("error", error).toString(),
+        )
+    }
+
+    // ── perf readback: ring buffer of vsync deltas (bead 0n7 scope note) ──
+
+    private fun recordFrameDelta(frameTimeNanos: Long) {
+        if (lastFrameNanos != 0L) {
+            val deltaMs = (frameTimeNanos - lastFrameNanos) / 1_000_000.0
+            frameDeltas[frameDeltaIndex] = deltaMs
+            frameDeltaIndex = (frameDeltaIndex + 1) % frameDeltas.size
+            if (frameDeltaCount < frameDeltas.size) frameDeltaCount++
+            if (deltaMs > 1.5 * refreshPeriodMs()) droppedSinceQuery++
+        }
+        lastFrameNanos = frameTimeNanos
+    }
+
+    private fun refreshPeriodMs(): Double {
+        val rate = display?.refreshRate?.toDouble() ?: 60.0
+        return if (rate > 1.0) 1_000.0 / rate else 1_000.0 / 60.0
+    }
+
+    private fun deliverFrameStats(query: Scene3dRuntime.Query) {
+        val window = DoubleArray(frameDeltaCount) { frameDeltas[it] }
+        window.sort()
+        val avg = if (window.isEmpty()) 0.0 else window.average()
+        val p95 =
+            if (window.isEmpty()) {
+                0.0
+            } else {
+                window[((window.size - 1) * 95 + 99) / 100]
+            }
+        val reply =
+            JSONObject()
+                .put("frames", framesSinceQuery)
+                .put("avg_ms", Math.round(avg * 1000.0) / 1000.0)
+                .put("p95_ms", Math.round(p95 * 1000.0) / 1000.0)
+                .put("dropped", droppedSinceQuery)
+                .put("entities", registry.size)
+                .put("renderables", scene.renderableCount)
+        framesSinceQuery = 0
+        droppedSinceQuery = 0
+        MobScene3dBridge.nativeDeliverScene3d(
+            query.pid,
+            "stats",
+            viewportId,
+            query.requestId,
+            reply.toString(),
+        )
     }
 
     // ── the applier: patch ops → Filament mutations (the mapping table) ────
@@ -777,8 +1101,8 @@ class Scene3dView(
         id: String,
         pickable: Boolean,
     ) {
-        // Picking is a later bead (mob_scene3d-na8); the registry membership
-        // is maintained now so readback reflects intent.
+        // The registry json is what pick resolution consults (resolvePick),
+        // so flipping the flag takes effect on the next tap/pick.
         registry[id]?.json?.put("pickable", pickable)
     }
 

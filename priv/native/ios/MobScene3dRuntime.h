@@ -13,6 +13,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, strong) NSArray<NSArray *> *ops;
 /// Each: @{ @"request_id": NSString, @"token": NSData (opaque pid) }
 @property(nonatomic, strong) NSArray<NSDictionary *> *sceneRequests;
+/// Introspection queries. Each: @{ @"kind": @"pick"|@"sample"|@"stats",
+/// @"request_id": NSString, @"token": NSData, @"params": NSDictionary }
+@property(nonatomic, strong) NSArray<NSDictionary *> *queries;
 @property(nonatomic, assign) BOOL reset;
 @end
 
@@ -26,9 +29,16 @@ NSArray<NSArray *> *MobScene3dAttach(NSString *viewportId, NSObject *view);
 void MobScene3dDetach(NSString *viewportId, NSObject *view);
 MobScene3dDrain *MobScene3dDrainTick(NSString *viewportId);
 
-/// Async replies back to the BEAM (safe from the main thread).
+/// Async replies back to the BEAM (enif_send — safe from any thread).
 void MobScene3dDeliverScene(NSData *token, NSString *viewportId,
                             NSString *requestId, NSString *sceneJson);
+/// kind = @"pick" | @"sample" | @"stats" → {:scene3d_pick | :scene3d_sample
+/// | :scene3d_frame_stats, viewport, request_id, json} to the query's owner.
+void MobScene3dDeliverReply(NSString *kind, NSData *token, NSString *viewportId,
+                            NSString *requestId, NSString *json);
+/// Touch-path pick hit → {:scene3d_pick_event, viewport, entity_id} to the
+/// viewport owner. Misses deliver nothing (the honest-miss ruling).
+void MobScene3dDeliverPickEvent(NSString *viewportId, NSString *entityId);
 void MobScene3dDeliverError(NSString *viewportId, NSString *errorJson);
 void MobScene3dDeliverReady(NSString *viewportId);
 

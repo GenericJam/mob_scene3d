@@ -1,0 +1,4 @@
+moto_picks_before: []
+moto_picks_after_probe: ["probe"]
+moto_picks_after_decoy_bg: ["probe"]  # decoy + background taps: silence (honest miss)
+tap points (px): probe (150,656) decoy (528,656) background (339,309); viewport origin (42,257) @1.75x

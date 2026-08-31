@@ -20,9 +20,36 @@
 %%                            sent to the calling process.
 %%   scene3d_destroy/1     -> result JSON binary; tears down the viewport's
 %%                            scene state and buffered patches.
+%%   scene3d_pick/2        -> result JSON binary; QueryJson carries
+%%                            {"request_id","x","y"} (viewport-local dp/pt).
+%%                            On ok the async resolution arrives as
+%%                            {scene3d_pick, ViewportId, ReqId, Json} where
+%%                            Json is {"entity":Id} or {"miss":true} — the
+%%                            same render-thread Filament View::pick the
+%%                            {Tag, EntityId} touch events use.
+%%   scene3d_sample/2      -> result JSON binary; QueryJson carries
+%%                            {"request_id","x","y","w","h"}. On ok the GPU
+%%                            readback (Filament readPixels — window capture
+%%                            cannot see the surface) arrives as
+%%                            {scene3d_sample, ViewportId, ReqId, Json} with
+%%                            {"width","height","rgba"(base64)}.
+%%   scene3d_frame_stats/2 -> result JSON binary; on ok the render-thread
+%%                            ring-buffer stats arrive as
+%%                            {scene3d_frame_stats, ViewportId, ReqId, Json}.
+%%   scene3d_viewports/0   -> {"viewports":[Ids]} of currently attached
+%%                            renderers (synchronous registry read).
 -module(mob_scene3d_nif).
 
--export([scene3d_caps/0, scene3d_apply/2, scene3d_scene/2, scene3d_destroy/1]).
+-export([
+    scene3d_caps/0,
+    scene3d_apply/2,
+    scene3d_scene/2,
+    scene3d_destroy/1,
+    scene3d_pick/2,
+    scene3d_sample/2,
+    scene3d_frame_stats/2,
+    scene3d_viewports/0
+]).
 
 -on_load(init/0).
 
@@ -47,4 +74,20 @@ scene3d_scene(_ViewportId, _ReqId) ->
 
 -spec scene3d_destroy(binary()) -> binary().
 scene3d_destroy(_ViewportId) ->
+    erlang:nif_error(nif_not_loaded).
+
+-spec scene3d_pick(binary(), binary()) -> binary().
+scene3d_pick(_ViewportId, _QueryJson) ->
+    erlang:nif_error(nif_not_loaded).
+
+-spec scene3d_sample(binary(), binary()) -> binary().
+scene3d_sample(_ViewportId, _QueryJson) ->
+    erlang:nif_error(nif_not_loaded).
+
+-spec scene3d_frame_stats(binary(), binary()) -> binary().
+scene3d_frame_stats(_ViewportId, _ReqId) ->
+    erlang:nif_error(nif_not_loaded).
+
+-spec scene3d_viewports() -> binary().
+scene3d_viewports() ->
     erlang:nif_error(nif_not_loaded).
