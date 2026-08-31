@@ -1,0 +1,62 @@
+screen: S3dSpike.HomeScreen
+screen after nav: S3dSpike.PawnScreen
+viewports: {:ok, ["pawn_vp"]}
+caps features: MapSet.new(["material_scope"])
+OK   caps declare material_scope
+pawn status: "ready"
+pawn material_state (scoped tint): [
+  %{
+    "applied" => ["base_color"],
+    "instances" => ["pawn_body"],
+    "scope" => "pawn_body"
+  }
+]
+OK   pawn asset loaded
+OK   material_state: tint applied to pawn_body ONLY
+vertical strip (y, {r,g,b}) at x=162..178: [
+  {30, {213, 164, 124}},
+  {45, {216, 136, 88}},
+  {90, {103, 33, 7}},
+  {150, {207, 128, 79}},
+  {210, {220, 149, 108}},
+  {270, {196, 91, 32}},
+  {320, {142, 51, 12}}
+]
+body avg rgb (expect vermilion tint): {180, 76, 22}
+accent avg rgb (expect authored ivory): {213, 164, 124}
+background avg rgb: {38, 44, 67}
+OK   body region shows the scoped tint (red-dominant)
+OK   accent region stays ivory (warm neutral, NOT tinted)
+material_state (body tint + accent emissive): [
+  %{
+    "applied" => ["base_color"],
+    "instances" => ["pawn_body"],
+    "scope" => "pawn_body"
+  },
+  %{
+    "applied" => ["emissive"],
+    "instances" => ["pawn_accent"],
+    "scope" => "pawn_accent"
+  }
+]
+OK   two simultaneous scoped overrides applied to their own instances
+accent avg rgb with green emissive: {214, 174, 126}
+OK   accent emissive raised the green channel
+accent avg rgb after emissive removed (rebuild): {213, 164, 124}
+OK   removing the accent override rebuilt back to authored ivory
+OK   body tint survived the rebuild
+raw set_material with bogus scope: {:error, {:unknown_material, "pawn", "pawn_bogus"}}
+OK   unknown scope rejects SYNCHRONOUSLY once the asset is loaded
+OK   rejected patch left the applied overrides untouched
+raw add_entity with bogus scope on unloaded asset: :ok
+OK   shadow tolerates the unloaded asset (async-tolerant)
+screen :errors assign (async scene errors): [{"pawn_vp", "[\"unknown_material\",\"late_probe\",\"no_such_material\"]"}]
+OK   async unknown_material error reached the owning screen
+late_probe material_state (error marker): [%{"error" => "unknown_material", "scope" => "no_such_material"}]
+OK   readback marks the unmatched scope as unknown_material
+cleanup remove late_probe: :ok
+unknown op straight at the NIF: {:error, {:unknown_op, "set_material_v9"}}
+OK   unknown op rejects the whole patch (skew defense in depth)
+battery complete
+
+[exited with code 0]

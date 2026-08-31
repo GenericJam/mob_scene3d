@@ -40,6 +40,7 @@
 #include <gltfio/FilamentInstance.h>
 #include <gltfio/MaterialProvider.h>
 #include <gltfio/ResourceLoader.h>
+#include <gltfio/TextureProvider.h>
 #include <gltfio/materials/uberarchive.h>
 
 #include <math/mat4.h>
@@ -218,6 +219,8 @@ NSString *s3d_json_string(NSString *value) {
   MaterialProvider *_materials;
   AssetLoader *_assetLoader;
   ResourceLoader *_resourceLoader;
+  TextureProvider *_stbProvider;
+  TextureProvider *_ktx2Provider;
   utils::NameComponentManager *_names;
 
   std::map<std::string, S3dRec> _registry;
@@ -328,6 +331,16 @@ NSString *s3d_json_string(NSString *value) {
   resources.engine = _engine;
   resources.normalizeSkinningWeights = true;
   _resourceLoader = new ResourceLoader(resources);
+  // Embedded glTF textures need explicit decoders on the C++ path — the
+  // Android AAR's ResourceLoader wires stb/KTX2 providers internally, but
+  // here nothing decodes without these and textured materials render BLACK
+  // (found by the two-tone pawn, the first textured asset through this
+  // applier; the earlier factor-only assets never exercised decoding).
+  _stbProvider = createStbProvider(_engine);
+  _ktx2Provider = createKtx2Provider(_engine);
+  _resourceLoader->addTextureProvider("image/png", _stbProvider);
+  _resourceLoader->addTextureProvider("image/jpeg", _stbProvider);
+  _resourceLoader->addTextureProvider("image/ktx2", _ktx2Provider);
 }
 
 // ── lifecycle ────────────────────────────────────────────────────────────
@@ -1419,6 +1432,8 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   _materials->destroyMaterials();
   delete _materials;
   delete _resourceLoader;
+  delete _stbProvider;
+  delete _ktx2Provider;
   delete _names;
   _engine->destroy(_skybox);
   _engine->destroyCameraComponent(_fallbackCameraEntity);

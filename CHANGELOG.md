@@ -39,6 +39,15 @@ for the canonical process.
     the instance from the shared asset instead of silently keeping the old
     factor.
 
+### Fixed
+
+- iOS: embedded glTF textures now decode. The iOS applier's gltfio
+  `ResourceLoader` had no `TextureProvider`s (the Android AAR wires stb/KTX2
+  internally; the C++ path does not), so any textured material rendered
+  black. Found by the two-tone pawn — the first textured asset through the
+  applier; the earlier factor-only assets never exercised decoding. Both
+  platforms now render embedded PNG/JPEG/KTX2 textures identically.
+
 - glTF animation playback (bead `mob_scene3d-al6`;
   `decisions/2026-08-30-animation-playback.md`): the honest stub is now the
   real thing on both platforms.
