@@ -405,6 +405,12 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   NSData *token = CFBridgingRelease(ctx->token);
   NSString *viewportId = CFBridgingRelease(ctx->viewport);
   NSString *requestId = CFBridgingRelease(ctx->requestId);
+  // The swap chain's alpha channel is not part of the composited output
+  // (the layer is opaque) — report the pixels as displayed: opaque. Keeps
+  // 0xAARRGGBB comparisons against Mob.Test's sampler sane.
+  uint8_t *bytes = (uint8_t *)buffer;
+  for (size_t i = 3; i < size; i += 4)
+    bytes[i] = 0xFF;
   NSData *rgba = [NSData dataWithBytesNoCopy:buffer
                                       length:size
                                 freeWhenDone:NO];

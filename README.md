@@ -58,12 +58,24 @@ end
 ## Agent-first, from day one
 
 Every rendering feature ships with introspection, or it doesn't ship. The
-3D equivalents of `Mob.Test.element_frames/1`:
+3D equivalents of `Mob.Test.element_frames/1` (shipped — see
+`decisions/2026-08-30-pick-introspection.md`):
 
-- `Mob.Scene3d.pick(node, x, y)` → the entity under a point (ray pick)
-- `Mob.Scene3d.scene(node)` → the applied scene graph as data
-- Honest errors — `{:error, :no_entity_at_point}`, never a phantom `:ok`
-- Region pixel sampling reuses Mob's existing `sample_region`
+- `Mob.Scene3d.pick(node, x, y)` → the entity under a point — the same
+  native ray pick taps ride, so test picking and runtime picking agree
+- `Mob.Scene3d.scene(node)` → the **applied** scene graph as data (world
+  transforms from the native TransformManager, asset status — never
+  echoed intent)
+- `Mob.Scene3d.sample_region(node, {x, y, w, h})` → pixel truth via
+  Filament GPU readback (window capture cannot see the surface); same
+  stats shape as `Mob.Test.sample_color/2`. Assert dominance/tolerance,
+  not exact bytes — the readback is post tone-mapping.
+- `Mob.Scene3d.frame_stats(node)` → avg/p95 frame ms, dropped-frame and
+  frame counts since last query, entity/renderable counts
+- Honest errors — `{:error, {:no_entity_at_point, x, y}}`, never a
+  phantom `:ok`; misses are query results, not events
+- `Mob.Scene3d.Test` mirrors these for test code (a `Mob.Test`-side alias
+  awaits a plugin-extension seam in mob core)
 
 This is a hard requirement, not a nice-to-have: an agent that can query the
 scene instead of squinting at screenshots is the whole reason to build 3D

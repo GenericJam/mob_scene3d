@@ -909,6 +909,15 @@ class Scene3dView(
             buffer.rewind()
             val bytes = ByteArray(buffer.remaining())
             buffer.get(bytes)
+            // The swap chain's alpha channel is not part of the composited
+            // output (the surface is opaque; GLES leaves it 0) — report the
+            // pixels as displayed: opaque. Keeps 0xAARRGGBB comparisons
+            // against Mob.Test's sampler sane.
+            var alphaIndex = 3
+            while (alphaIndex < bytes.size) {
+                bytes[alphaIndex] = -1
+                alphaIndex += 4
+            }
             val reply =
                 JSONObject()
                     .put("width", w)
