@@ -5,8 +5,21 @@ description, rendered identically on iOS and Android through a shared
 renderer — [Filament](https://github.com/google/filament) — with thin
 per-platform shims for surface, vsync, and input.
 
-**Status: design/scaffold.** No code yet. The plan lives in this README and
-the bead tracker (`bd list`); conventions live in [AGENTS.md](AGENTS.md).
+**Status: working on both platforms.** Scenes render on iOS (Metal) and
+Android (GLES/Vulkan) from one description: glTF models, PBR material
+overrides, lights, camera, image-based lighting, skeletal animation
+playback, ray picking, and GPU pixel readback. [Chopaat][chopaat] is the
+driving consumer — a board game whose board, pawns and cowrie shells are
+all `.glb` driven from Elixir.
+
+What is *not* there yet: textures assignable at runtime (they come baked
+into the glTF), procedural geometry, and custom shaders. See
+[PLAN.md](PLAN.md) for what to add and in what order.
+
+Conventions live in [AGENTS.md](AGENTS.md); work is tracked in beads
+(`bd list`).
+
+[chopaat]: https://github.com/GenericJam/chopaat
 
 ## Why this shape
 
@@ -38,22 +51,46 @@ UI trees — and diffs/patches it over the NIF wire. The Elixir side never
 talks to Metal or GLES; it talks to one scene IR, and Filament makes that
 IR mean the same thing everywhere.
 
+The scene is a list of entities built in plain Elixir and handed to a
+viewport component, which diffs it against the last **committed** scene and
+ships only the delta over the NIF wire:
+
 ```elixir
-def render(assigns) do
-  ~MOB"""
-  <Scene3d id="board" on_pick={:piece_picked}>
-    <Camera position={{0.0, 8.0, 6.0}} look_at={{0.0, 0.0, 0.0}} />
-    <Light type="directional" intensity={100_000} direction={{0.5, -1.0, -0.5}} />
-    <Environment ibl="env/studio" />
-    <Model id="board" asset="board.glb" />
-    <Model :for={p <- @pieces} id={p.id} asset="piece.glb"
-           position={p.pos} rotation={p.rot} material_tint={p.color} />
-  </Scene3d>
-  """
+alias Mob.Scene3d.IR
+alias Mob.Scene3d.IR.{Camera, Entity, Light, Material, Model, Transform}
+
+defp scene(assigns) do
+  IR.new([
+    %Entity{id: "camera", transform: %Transform{position: {0.0, 1.2, 0.9}},
+            data: %Camera{fov_y: 45.0}},
+    %Entity{id: "sun", data: %Light{type: :directional, intensity: 100_000}},
+    %Entity{id: "env", data: %Environment{ibl: "studio"}},
+    %Entity{id: "board", data: %Model{asset: "board.glb"}}
+    | for p <- assigns.pieces do
+        %Entity{
+          id: p.id,
+          pickable: true,
+          transform: %Transform{position: p.pos, rotation: p.rot},
+          data: %Model{asset: "piece.glb", material: %Material{base_color: p.color}}
+        }
+      end
+  ])
+end
+
+defp viewport(assigns) do
+  Mob.Scene3d.viewport(
+    id: :board,
+    ir: scene(assigns),
+    width: 360,
+    height: 400,
+    on_pick: :piece_picked
+  )
 end
 ```
 
-(API shape illustrative — the scene IR design is bead `mob_scene3d-qh4`.)
+Diffing against the committed scene — not against the last intent — means
+coalesced re-renders never desync from what the native applier actually
+holds.
 
 ## Agent-first, from day one
 
@@ -97,21 +134,42 @@ authoring time (USDZ in particular is an Apple-only pipeline dead end here).
 - **Image-based lighting:** environments precomputed with Filament's
   `cmgen` into KTX (a prefiltered specular cubemap + spherical-harmonics
   irradiance), shipped in `priv/` and referenced by name
-- Asset prep is tooling, not app code: a `mix scene3d.assets` task wraps
-  the conversions (bead `mob_scene3d-392`)
+- Asset prep is tooling, not app code: `mix scene3d.assets` wraps the
+  conversions and validates against the Khronos validator — see
+  [guides/assets.md](guides/assets.md) and
+  `decisions/2026-08-30-asset-pipeline.md`
 
 ## Roadmap
 
-Tracked in beads (`bd list`), roughly: Filament embedding spike on both
-platforms → scene IR design → NIF wire + applier → surface/lifecycle shims
-→ asset pipeline → picking/input → Mob.Test integration → camera helpers,
-animation, docs + example app. Earlier estimate for the core: 2–3 weeks
-single-human, 3–5 days for an agent fleet with device verification.
+The core is in: Filament embedded on both platforms, scene IR, NIF wire and
+appliers, surface/lifecycle shims, asset pipeline, picking and input,
+introspection, camera, lights, environment, material overrides, and glTF
+animation playback.
+
+What is next, and the reasoning for the ordering, is in
+[PLAN.md](PLAN.md) — briefly:
+
+- **`mob_scene3d-qxb`** — a texture reference on the material override, so
+  a surface can be re-skinned from Elixir rather than only from the glTF.
+  The one gap that blocks a whole class of app.
+- **`mob_scene3d-eih`** — ship primitive `.glb` assets (cube, sphere,
+  plane, cylinder) instead of adding geometry ops. No native work.
+- **`mob_scene3d-962`** — procedural geometry, deliberately deferred until
+  a real consumer needs it; it introduces render-thread resource lifetimes
+  that authored assets do not.
+
+Deliberately not planned: a general Filament binding. Filament's app-facing
+surface is ~1,100 public methods across 39 core headers, most of it builder
+and lifecycle plumbing with no meaning to a scene description — and it is
+stateful, thread-affine and resource-owning, which is exactly what should
+not cross into BEAM-managed state. The scene IR buys the compatibility
+without the binding. PLAN.md has the full argument.
 
 ## Known costs, accepted deliberately
 
 - Filament adds a few MB per platform and a **prebuilt-binary link step**
   (AAR / xcframework) to builds that are otherwise source-built — new
-  territory for mob's zig/Gradle toolchain; de-risked first by bead `mob_scene3d-b9g`.
+  territory for mob's zig/Gradle toolchain — de-risked by the embedding
+  spike, recorded in `decisions/2026-08-30-filament-spike.md`.
 - Filament's release cadence is its own; pin exact versions in the build
   and record upgrades in the changelog.
