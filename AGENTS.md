@@ -140,3 +140,23 @@ happened*, not *the call returned* — APIs return `{:error, :no_effect}`
 - Decision records live in `decisions/` (dated markdown), mob-style.
 - Beads (`bd`) is the issue tracker in this repo; keep the dependency DAG
   honest — "blocked by" is load-bearing with parallel agents.
+
+## Beads on a fresh clone
+
+The tracker's Dolt database (`.beads/embeddeddolt/`) is gitignored by bd's
+own design, so a clone arrives with no issues in it. What travels through git
+is `.beads/issues.jsonl`, kept current by `export.auto` in
+`.beads/config.yaml`.
+
+To rebuild the tracker after cloning:
+
+```bash
+bd init --reinit-local --prefix mob_scene3d
+bd import .beads/issues.jsonl
+bd list
+```
+
+`--reinit-local` is required: plain `bd init` aborts because `.beads/` already
+exists in the clone. Do not commit `.beads/embeddeddolt/` or
+`.beads-credential-key` — the first is a 4 MB binary working set that will
+conflict on every merge, the second is a federation auth key.
