@@ -4,12 +4,12 @@
 # Regenerated whenever `config :mob, :plugins` changes (the deploy/regen hook).
 %{
   nifs: [:mob_scene3d_nif],
-  settings: [],
-  screens: [],
-  notification_handlers: [],
-  lifecycle: [],
-  styles: [%{name: :mob_themes, theme: MobThemes.Obsidian}],
-  default_style: :mob_themes,
   composites: [],
-  default_font: nil
+  default_font: nil,
+  default_style: :mob_themes,
+  lifecycle: [],
+  notification_handlers: [],
+  screens: [],
+  settings: [],
+  styles: [%{name: :mob_themes, theme: MobThemes.Obsidian}]
 }
