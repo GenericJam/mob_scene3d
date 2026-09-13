@@ -677,10 +677,17 @@ fun MobScene3dViewport(props: Map<String, Any?>) {
     val viewportId = props["viewport_id"] as? String ?: return
     val w = (props["width"] as? Number)?.toFloat() ?: 340f
     val h = (props["height"] as? Number)?.toFloat() ?: 420f
+    // background: 0xAARRGGBB (sRGB) clear colour; absent = the default dark
+    // skybox. Applied on create and on every recomposition so a screen can
+    // change it without recreating the surface.
+    val background = (props["background"] as? Number)?.toLong()
     // clipToBounds: a surface otherwise draws past its declared bounds and
     // stomps siblings (MobGpuView's identical treatment).
     Box(modifier = Modifier.size(w.dp, h.dp).clipToBounds()) {
-        AndroidView(factory = { ctx -> Scene3dView(ctx, viewportId) })
+        AndroidView(
+            factory = { ctx -> Scene3dView(ctx, viewportId, background) },
+            update = { view -> view.setBackgroundArgb(background) },
+        )
     }
 }
 
@@ -689,6 +696,7 @@ fun MobScene3dViewport(props: Map<String, Any?>) {
 class Scene3dView(
     context: Context,
     private val viewportId: String,
+    backgroundArgb: Long? = null,
 ) : SurfaceView(context),
     Choreographer.FrameCallback {
     private class Rec(
@@ -757,8 +765,39 @@ class Scene3dView(
 
     private val fallbackCameraEntity = EntityManager.get().create()
     private val fallbackCamera: Camera = engine.createCamera(fallbackCameraEntity)
+
+    // The clear colour: the viewport's `background` prop (sRGB ARGB → linear)
+    // or the default dark skybox when the screen sets none.
     private val skybox: Skybox =
-        Skybox.Builder().color(0.035f, 0.04f, 0.07f, 1.0f).build(engine)
+        Skybox.Builder().color(0.035f, 0.04f, 0.07f, 1.0f).build(engine).also {
+            skyboxArgb = backgroundArgb
+            applySkyboxColor(it, backgroundArgb)
+        }
+    private var skyboxArgb: Long? = null
+
+    /** Re-tint the skybox; `null` restores the default dark clear colour. */
+    fun setBackgroundArgb(argb: Long?) {
+        if (argb == skyboxArgb) return
+        skyboxArgb = argb
+        applySkyboxColor(skybox, argb)
+    }
+
+    private fun applySkyboxColor(
+        sky: Skybox,
+        argb: Long?,
+    ) {
+        if (argb == null) {
+            sky.setColor(0.035f, 0.04f, 0.07f, 1.0f)
+            return
+        }
+        val r = srgbToLinear(((argb shr 16) and 0xFF).toFloat() / 255f)
+        val g = srgbToLinear(((argb shr 8) and 0xFF).toFloat() / 255f)
+        val b = srgbToLinear((argb and 0xFF).toFloat() / 255f)
+        sky.setColor(r, g, b, 1.0f)
+    }
+
+    private fun srgbToLinear(c: Float): Float =
+        if (c <= 0.04045f) c / 12.92f else Math.pow(((c + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
 
     private var viewportWidth = 0
     private var viewportHeight = 0

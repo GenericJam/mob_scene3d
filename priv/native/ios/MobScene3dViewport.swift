@@ -9,12 +9,18 @@ import SwiftUI
 
 private struct MobScene3dRepresentable: UIViewRepresentable {
     let viewportId: String
+    // 0xAARRGGBB (sRGB) clear colour, or nil for the default dark skybox.
+    let background: NSNumber?
 
     func makeUIView(context: Context) -> MobScene3dView {
-        MobScene3dView(frame: .zero, viewportId: viewportId)
+        let view = MobScene3dView(frame: .zero, viewportId: viewportId)
+        view.backgroundArgb = background
+        return view
     }
 
-    func updateUIView(_ uiView: MobScene3dView, context: Context) {}
+    func updateUIView(_ uiView: MobScene3dView, context: Context) {
+        uiView.backgroundArgb = background
+    }
 }
 
 public struct MobScene3dViewport: View {
@@ -28,10 +34,11 @@ public struct MobScene3dViewport: View {
         let viewportId = props["viewport_id"] as? String ?? ""
         let width = (props["width"] as? NSNumber)?.doubleValue ?? 340
         let height = (props["height"] as? NSNumber)?.doubleValue ?? 420
+        let background = props["background"] as? NSNumber
         if viewportId.isEmpty {
             EmptyView()
         } else {
-            MobScene3dRepresentable(viewportId: viewportId)
+            MobScene3dRepresentable(viewportId: viewportId, background: background)
                 .frame(width: width, height: height)
                 .clipped()
         }

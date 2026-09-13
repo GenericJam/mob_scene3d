@@ -14,6 +14,11 @@ for the canonical process.
 
 ### Added
 
+- Viewport `background:` option — a `0xAARRGGBB` sRGB clear colour applied
+  to the skybox (both natives), re-tinted live on change. Screens can match
+  the viewport to the app's paper instead of drawing a backdrop plane
+  (Crosscourt Shells Only / board screens).
+
 - Name-scoped material overrides (bead `mob_scene3d-bqc`;
   `decisions/2026-08-31-scoped-material-overrides.md`): tint one named glTF
   material instead of the whole model — the Chopaat two-tone pawn contract

@@ -104,6 +104,29 @@ defmodule Mob.Scene3d.ViewportTest do
     refute_received {:pick, _id}
   end
 
+  test "background: rides the render props as an ARGB integer, absent by default" do
+    socket = mounted(%{id: :board, screen_pid: self()})
+    refute Map.has_key?(Viewport.render(socket.assigns), :background)
+
+    socket = mounted(%{id: :board, screen_pid: self(), background: 0xFFF2E6CB})
+    assert Viewport.render(socket.assigns).background == 0xFFF2E6CB
+
+    {:ok, updated} = Viewport.update(%{id: :board, background: 0xFF7A5533}, socket)
+    assert Viewport.render(updated.assigns).background == 0xFF7A5533
+
+    {:ok, kept} = Viewport.update(%{id: :board}, updated)
+    assert Viewport.render(kept.assigns).background == 0xFF7A5533
+  end
+
+  test "Mob.Scene3d.viewport/1 refuses a non-integer background" do
+    assert_raise ArgumentError, ~r/background must be a 0xAARRGGBB integer/, fn ->
+      Mob.Scene3d.viewport(id: :board, background: "#f2e6cb")
+    end
+
+    assert Mob.Scene3d.viewport(id: :board, background: 0xFFF2E6CB).props[:background] ==
+             0xFFF2E6CB
+  end
+
   test "Mob.Scene3d.viewport/1 refuses a non-atom on_pick tag" do
     assert_raise ArgumentError, ~r/on_pick must be an atom/, fn ->
       Mob.Scene3d.viewport(id: :board, on_pick: "strings_leak")

@@ -12,6 +12,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithFrame:(CGRect)frame viewportId:(NSString *)viewportId;
 
+/// The clear colour as 0xAARRGGBB (sRGB); nil restores the default dark
+/// skybox. Settable at any time — the skybox is re-tinted in place.
+@property(nonatomic, strong, nullable) NSNumber *backgroundArgb;
+
 @end
 
 NS_ASSUME_NONNULL_END
