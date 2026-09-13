@@ -33,6 +33,7 @@ defmodule Mob.Scene3d.Viewport do
         viewport_id: viewport_id,
         width: props[:width] || 340,
         height: props[:height] || 420,
+        background: props[:background],
         pick_tag: props[:on_pick] || :pick,
         anim_tag: props[:on_animation_done] || :animation_done,
         screen_pid: props[:screen_pid],
@@ -48,6 +49,7 @@ defmodule Mob.Scene3d.Viewport do
       Mob.Socket.assign(socket,
         width: props[:width] || socket.assigns.width,
         height: props[:height] || socket.assigns.height,
+        background: Map.get(props, :background, socket.assigns.background),
         pick_tag: props[:on_pick] || socket.assigns.pick_tag,
         anim_tag: props[:on_animation_done] || socket.assigns.anim_tag,
         screen_pid: props[:screen_pid] || socket.assigns.screen_pid
@@ -58,11 +60,15 @@ defmodule Mob.Scene3d.Viewport do
 
   @impl true
   def render(assigns) do
-    %{
+    base = %{
       viewport_id: assigns.viewport_id,
       width: assigns.width,
       height: assigns.height
     }
+
+    if is_integer(assigns.background),
+      do: Map.put(base, :background, assigns.background),
+      else: base
   end
 
   @impl true

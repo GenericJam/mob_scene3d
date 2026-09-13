@@ -60,6 +60,11 @@ defmodule Mob.Scene3d do
       `on_tap`/`on_dismiss`). A tap that hits nothing pickable is **not** an
       event — misses are a query result (`pick/3`), never noise pushed at
       the screen.
+    * `:background` — the viewport's clear colour as a `0xAARRGGBB` sRGB
+      integer (alpha ignored: the surface is opaque). Omit it for the
+      default dark skybox. Changing it re-tints the live skybox without
+      recreating the surface, so a screen can match the viewport to the
+      app's background (a cream sheet, a table) instead of drawing a plane.
     * `:on_animation_done` — atom tag for animation-completion events,
       default `:animation_done`. When a model's non-looping clip reaches its
       end, the owning screen's `handle_info/2` receives `{tag, play_id}` —
@@ -80,6 +85,18 @@ defmodule Mob.Scene3d do
     unless is_atom(anim_tag) do
       raise ArgumentError,
             "Mob.Scene3d.viewport :on_animation_done must be an atom, got: #{inspect(anim_tag)}"
+    end
+
+    case Keyword.get(opts, :background) do
+      nil ->
+        :ok
+
+      argb when is_integer(argb) and argb >= 0 and argb <= 0xFFFFFFFF ->
+        :ok
+
+      other ->
+        raise ArgumentError,
+              "Mob.Scene3d.viewport :background must be a 0xAARRGGBB integer, got: #{inspect(other)}"
     end
 
     # render/1 runs in the screen server process, so self() here is the

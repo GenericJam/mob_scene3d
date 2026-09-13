@@ -311,9 +311,13 @@ NSString *s3d_json_string(NSString *value) {
   _view->setCamera(_fallbackCamera);
 
   // Solid dark skybox: the surface is visibly alive even with no model.
+  // The viewport's `background` prop re-tints it (see setBackgroundArgb:).
   _skybox =
       Skybox::Builder().color({0.035f, 0.04f, 0.07f, 1.0f}).build(*_engine);
   _scene->setSkybox(_skybox);
+  if (_backgroundArgb != nil) {
+    [self applySkyboxColor:_backgroundArgb];
+  }
 
   _materials = createUbershaderProvider(_engine, UBERARCHIVE_DEFAULT_DATA,
                                         UBERARCHIVE_DEFAULT_SIZE);
@@ -1416,6 +1420,35 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
 }
 
 // ── teardown ─────────────────────────────────────────────────────────────
+
+
+- (void)setBackgroundArgb:(NSNumber *)backgroundArgb {
+  if (backgroundArgb == _backgroundArgb ||
+      (backgroundArgb != nil && _backgroundArgb != nil &&
+       [backgroundArgb isEqualToNumber:_backgroundArgb])) {
+    return;
+  }
+  _backgroundArgb = backgroundArgb;
+  if (_skybox != nullptr) {
+    [self applySkyboxColor:backgroundArgb];
+  }
+}
+
+// sRGB 0xAARRGGBB → the skybox's linear colour; nil = the default dark.
+- (void)applySkyboxColor:(NSNumber *)argb {
+  if (argb == nil) {
+    _skybox->setColor({0.035f, 0.04f, 0.07f, 1.0f});
+    return;
+  }
+  uint32_t v = (uint32_t)[argb unsignedLongLongValue];
+  auto lin = [](float c) {
+    return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+  };
+  float r = lin(((v >> 16) & 0xFF) / 255.0f);
+  float g = lin(((v >> 8) & 0xFF) / 255.0f);
+  float b = lin((v & 0xFF) / 255.0f);
+  _skybox->setColor({r, g, b, 1.0f});
+}
 
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
