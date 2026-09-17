@@ -220,3 +220,23 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Beads on a fresh clone
+
+The tracker's Dolt database (`.beads/embeddeddolt/`) is gitignored by bd's
+own design, so a clone arrives with no issues in it. What travels through git
+is `.beads/issues.jsonl`, kept current by `export.auto` in
+`.beads/config.yaml`.
+
+To rebuild the tracker after cloning:
+
+```bash
+bd init --reinit-local --prefix mob_scene3d
+bd import .beads/issues.jsonl
+bd list
+```
+
+`--reinit-local` is required: plain `bd init` aborts because `.beads/` already
+exists in the clone. Do not commit `.beads/embeddeddolt/` or
+`.beads-credential-key` — the first is a 4 MB binary working set that will
+conflict on every merge, the second is a federation auth key.
