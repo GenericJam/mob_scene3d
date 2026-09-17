@@ -12,19 +12,43 @@ defmodule Mob.Scene3dProjectTest do
       "camera" => %{
         "data" => %{"kind" => "camera", "fov_y" => 90.0, "near" => 0.1, "far" => 100.0},
         "world_transform" => [
-          1.0, 0.0, 0.0, 0.0,
-          0.0, 1.0, 0.0, 0.0,
-          0.0, 0.0, 1.0, 0.0,
-          0.0, 0.0, 5.0, 1.0
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          5.0,
+          1.0
         ]
       },
       "model" => %{
         "data" => %{"kind" => "model"},
         "world_transform" => [
-          1.0, 0.0, 0.0, 0.0,
-          0.0, 1.0, 0.0, 0.0,
-          0.0, 0.0, 1.0, 0.0,
-          0.0, 0.0, 0.0, 1.0
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
         ]
       }
     }
@@ -89,7 +113,8 @@ defmodule Mob.Scene3dProjectTest do
         fn viewport_id, request_id ->
           send(
             pid,
-            {:scene3d_scene, viewport_id, request_id, :json.encode(@scene) |> IO.iodata_to_binary()}
+            {:scene3d_scene, viewport_id, request_id,
+             :json.encode(@scene) |> IO.iodata_to_binary()}
           )
         end
       )
@@ -134,7 +159,9 @@ defmodule Mob.Scene3dProjectTest do
 
     @impl true
     def request_scene(viewport_id, request_id) do
-      deliver = :persistent_term.get({Mob.Scene3dProjectTest, :scene_delivery}, fn _, _ -> :ok end)
+      deliver =
+        :persistent_term.get({Mob.Scene3dProjectTest, :scene_delivery}, fn _, _ -> :ok end)
+
       deliver.(viewport_id, request_id)
       {:ok, ~s({"ok":true})}
     end

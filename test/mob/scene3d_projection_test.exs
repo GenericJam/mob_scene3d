@@ -10,20 +10,44 @@ defmodule Mob.Scene3d.ProjectionTest do
 
   # Filament column-major identity — reference matrix for the test suite.
   @identity [
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 1.0, 0.0,
-    0.0, 0.0, 0.0, 1.0
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0
   ]
 
   # Camera at (0, 0, 5) looking at -Z (identity rotation, translated on Z).
   # In column-major layout, the translation lives at m03/m13/m23 which are
   # indices 12/13/14.
   @camera_at_0_0_5 [
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 1.0, 0.0,
-    0.0, 0.0, 5.0, 1.0
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    5.0,
+    1.0
   ]
 
   describe "mul_vec/2" do
@@ -34,10 +58,22 @@ defmodule Mob.Scene3d.ProjectionTest do
     test "column-major translation matrix moves the point correctly" do
       # Translate (0, 0, 0, 1) by (1, 2, 3) should give (1, 2, 3, 1).
       translate = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        1.0, 2.0, 3.0, 1.0
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        1.0
       ]
 
       assert Projection.mul_vec(translate, {0.0, 0.0, 0.0, 1.0}) == {1.0, 2.0, 3.0, 1.0}
@@ -100,10 +136,22 @@ defmodule Mob.Scene3d.ProjectionTest do
       # +X in world maps to +X in view (identity rotation), then to +X in
       # NDC, so pixel x > width/2.
       entity_at_1_0_0 = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        1.0, 0.0, 0.0, 1.0
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0
       ]
 
       {:ok, %{x: x, y: y}} =
@@ -122,10 +170,22 @@ defmodule Mob.Scene3d.ProjectionTest do
 
     test "an entity above the camera projects to the top half (smaller pixel y)" do
       entity_at_0_1_0 = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 1.0, 0.0, 1.0
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0
       ]
 
       {:ok, %{x: x, y: y}} =
@@ -147,10 +207,22 @@ defmodule Mob.Scene3d.ProjectionTest do
       # camera (further away in +Z). The view matrix (inverse of camera
       # world) sends it further into +Z (behind the camera plane).
       entity_at_0_0_10 = [
-        1.0, 0.0, 0.0, 0.0,
-        0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, 1.0, 0.0,
-        0.0, 0.0, 10.0, 1.0
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        10.0,
+        1.0
       ]
 
       {:ok, result} =

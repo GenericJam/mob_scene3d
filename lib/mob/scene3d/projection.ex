@@ -132,13 +132,25 @@ defmodule Mob.Scene3d.Projection do
 
     [
       # column 0
-      f / aspect, 0.0, 0.0, 0.0,
+      f / aspect,
+      0.0,
+      0.0,
+      0.0,
       # column 1
-      0.0, f, 0.0, 0.0,
+      0.0,
+      f,
+      0.0,
+      0.0,
       # column 2
-      0.0, 0.0, (far + near) * nf, -1.0,
+      0.0,
+      0.0,
+      (far + near) * nf,
+      -1.0,
       # column 3
-      0.0, 0.0, 2.0 * far * near * nf, 0.0
+      0.0,
+      0.0,
+      2.0 * far * near * nf,
+      0.0
     ]
   end
 
