@@ -55,6 +55,7 @@ defmodule MobScene3d.MixProject do
       extras: [
         "README.md": [title: "mob_scene3d"],
         "CHANGELOG.md": [title: "Changelog"],
+        "guides/agents.md": [title: "Agent Readback"],
         "guides/assets.md": [title: "Asset Pipeline"]
       ]
     ]

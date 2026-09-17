@@ -37,7 +37,7 @@ defmodule Mob.Scene3d do
 
   alias Mob.Scene3d.IR
   alias Mob.Scene3d.IR.{Entity, Model, Patch}
-  alias Mob.Scene3d.{Native, Wire}
+  alias Mob.Scene3d.{Native, Projection, Wire}
 
   @scene_timeout 2_000
   # Host-side rpc wrappers add headroom over the device-local await so the
@@ -320,6 +320,145 @@ defmodule Mob.Scene3d do
          {:ok, payload} <- await_reply(:scene3d_sample, viewport_id, request_id, timeout) do
       decode_sample(payload)
     end
+  end
+
+  @doc """
+  Project an entity's origin into viewport pixel space using the
+  currently-applied camera (bead `mob_scene3d-xzh`). The companion to
+  `pick/N` and `sample_region/N`: `pick` answers "what entity is at
+  pixel (x, y)?", `project` answers "where in the viewport is entity X
+  right now?", and `sample_region` around the projected point confirms
+  the rendered pixels actually match.
+
+  Reads the applied scene via `scene/2` — same authoritative
+  `TransformManager` world transforms the render thread uses — then
+  computes the projection in Elixir: `view = inverse(camera_world) ·
+  projection(fov, aspect, near, far) · entity_origin`, then NDC → pixel.
+  A future revision may push this to the render thread as a single-tick
+  NIF for animated scenes that mutate transforms outside the IR flow;
+  the interface stays the same either way.
+
+  `viewport_size` is `{width, height}` in dp/pt — the same values the
+  screen declared with `Mob.Scene3d.viewport(id: id, width: w, height:
+  h)`. The Elixir side needs them to convert NDC to pixels; a native
+  revision could read them from `_view->getViewport()` and drop the
+  argument.
+
+  Returns `{:ok, %{x, y, depth, in_frame?}}` where:
+
+    * `x, y` — viewport-local pixel coords, origin top-left (matches
+      `sample_region`)
+    * `depth` — NDC z ∈ [-1, 1] where -1 is the near plane and +1 the
+      far plane; a negative-w point (behind the camera) surfaces here as
+      the raw clip z so agents can still reason about direction
+    * `in_frame?` — `true` when the entity origin's NDC (x, y, z) all
+      sit in [-1, 1] AND the point is in front of the camera plane
+
+  Honest errors: `{:error, {:no_viewport, id}}` when the viewport is not
+  attached; `{:error, {:no_entity, id}}` when the entity id is not in
+  the applied scene; `{:error, {:no_camera, viewport_id}}` when the
+  scene has no camera entity (nothing to project through);
+  `{:error, :singular_camera}` if the camera's world transform is not
+  invertible (a degenerate scale — never happens for a mob-generated
+  transform).
+
+  Shapes mirror `pick`:
+
+    * `project(node, entity_id, {w, h})` / `project(node, viewport_id,
+      entity_id, {w, h})` — host-side.
+    * `project(viewport_id, entity_id, {w, h}, timeout \\\\ #{@scene_timeout})`
+      — device-local.
+  """
+  @spec project(node() | String.t(), String.t(), {number(), number()}) ::
+          {:ok, %{x: float(), y: float(), depth: float(), in_frame?: boolean()}}
+          | {:error, term()}
+  def project(node, entity_id, {w, h})
+      when is_atom(node) and is_binary(entity_id) and is_number(w) and is_number(h) do
+    with {:ok, viewport_id} <- default_viewport(node),
+         do: project(node, viewport_id, entity_id, {w, h})
+  end
+
+  def project(viewport_id, entity_id, {w, h})
+      when is_binary(viewport_id) and is_binary(entity_id) and is_number(w) and is_number(h),
+      do: project(viewport_id, entity_id, {w, h}, @scene_timeout)
+
+  @spec project(
+          node() | String.t(),
+          String.t() | {number(), number()},
+          String.t() | {number(), number()},
+          {number(), number()} | timeout()
+        ) ::
+          {:ok, %{x: float(), y: float(), depth: float(), in_frame?: boolean()}}
+          | {:error, term()}
+  def project(node, viewport_id, entity_id, {w, h})
+      when is_atom(node) and is_binary(viewport_id) and is_binary(entity_id) and
+             is_number(w) and is_number(h),
+      do: rpc(node, :project, [viewport_id, entity_id, {w, h}])
+
+  def project(viewport_id, entity_id, {w, h}, timeout)
+      when is_binary(viewport_id) and is_binary(entity_id) and is_number(w) and is_number(h) do
+    with {:ok, scene} <- scene(viewport_id, timeout) do
+      project_from_scene(scene, entity_id, {w * 1.0, h * 1.0})
+    end
+  end
+
+  # Pure projection given an already-fetched scene map. Split out so host
+  # tests can exercise the math without a native viewport.
+  @doc false
+  @spec project_from_scene(map(), String.t(), {float(), float()}) ::
+          {:ok, %{x: float(), y: float(), depth: float(), in_frame?: boolean()}}
+          | {:error, term()}
+  def project_from_scene(%{"entities" => entities}, entity_id, {w, h})
+      when is_map(entities) do
+    entity = Map.get(entities, entity_id)
+
+    case find_camera(entities) do
+      _ when is_nil(entity) ->
+        {:error, {:no_entity, entity_id}}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, camera_entity, %{"fov_y" => fov_y, "near" => near, "far" => far}} ->
+        camera_world = camera_entity["world_transform"] || identity4()
+        entity_world = entity["world_transform"] || identity4()
+
+        case Projection.project_entity(camera_world, fov_y, near, far, {w, h}, entity_world) do
+          {:ok, result} -> {:ok, result}
+          {:error, :singular} -> {:error, :singular_camera}
+        end
+    end
+  end
+
+  def project_from_scene(scene, _entity_id, _size) when is_map(scene),
+    do: {:error, {:bad_scene, :no_entities}}
+
+  # First entity with data.kind == "camera". A scene without a camera has
+  # nothing to project through — surface that as a distinct error rather
+  # than the render-time silent black frame.
+  defp find_camera(entities) do
+    entities
+    |> Enum.find(fn {_id, ent} ->
+      case ent do
+        %{"data" => %{"kind" => "camera"}} -> true
+        _ -> false
+      end
+    end)
+    |> case do
+      nil -> {:error, :no_camera}
+      {_id, ent} -> {:ok, ent, ent["data"]}
+    end
+  end
+
+  # Column-major identity for entities that haven't received a world
+  # transform yet (fresh apply hasn't ticked).
+  defp identity4 do
+    [
+      1.0, 0.0, 0.0, 0.0,
+      0.0, 1.0, 0.0, 0.0,
+      0.0, 0.0, 1.0, 0.0,
+      0.0, 0.0, 0.0, 1.0
+    ]
   end
 
   @doc """

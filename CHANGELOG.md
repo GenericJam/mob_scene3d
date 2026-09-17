@@ -14,6 +14,29 @@ for the canonical process.
 
 ### Added
 
+- **`Mob.Scene3d.project/N`** (bead `mob_scene3d-xzh`) — the companion to
+  `pick/N` and `sample_region/N`: given a viewport id + entity id +
+  viewport `{w, h}` (dp/pt), returns
+  `{:ok, %{x, y, depth, in_frame?}}`. `x, y` are viewport-local pixel
+  coords (origin top-left, matches `sample_region`); `depth` is NDC z
+  ∈ [-1, 1]; `in_frame?` is `true` when the entity origin sits in NDC's
+  visible box AND is in front of the camera plane. Combined with
+  `sample_region({x - w/2, y - h/2, w, h})` an agent can verify "the
+  pixels where entity X should be actually show it" without doing
+  projection math.
+  - Reads the applied scene via `scene/2` — same authoritative
+    `TransformManager` world_transforms the render thread uses — then
+    computes `view = inverse(camera_world) · projection · entity_origin`
+    in Elixir. Matrix helpers are in `Mob.Scene3d.Projection` and pinned
+    by pure-math tests separate from the facade tests. A follow-up may
+    push this to the render thread as a single-tick NIF for animated
+    scenes that mutate transforms outside the IR flow; the facade shape
+    stays the same either way.
+  - Errors are honest: `{:no_entity, id}`, `{:no_camera, viewport_id}`,
+    `{:bad_scene, :no_entities}`, `:singular_camera` (degenerate scale).
+  - See `guides/agents.md` for the pick + project + sample_region
+    readback triple.
+
 - Viewport `background:` option — a `0xAARRGGBB` sRGB clear colour applied
   to the skybox (both natives), re-tinted live on change. Screens can match
   the viewport to the app's paper instead of drawing a backdrop plane
