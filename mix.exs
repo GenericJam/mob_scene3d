@@ -54,9 +54,10 @@ defmodule MobScene3d.MixProject do
       source_url_pattern: "#{@source_url}/blob/master/%{path}#L%{line}",
       extras: [
         "README.md": [title: "mob_scene3d"],
-        "CHANGELOG.md": [title: "Changelog"],
+        "guides/filament.md": [title: "Filament"],
         "guides/agents.md": [title: "Agent Readback"],
-        "guides/assets.md": [title: "Asset Pipeline"]
+        "guides/assets.md": [title: "Asset Pipeline"],
+        "CHANGELOG.md": [title: "Changelog"]
       ]
     ]
   end
