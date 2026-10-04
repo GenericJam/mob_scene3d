@@ -10,6 +10,20 @@ with this file's section as the body, and publishes to Hex. See
 [mob's RELEASE.md](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 for the canonical process.
 
+## [0.1.2] - 2026-10-04
+
+### Fixed
+
+- Android `<Scene3d>` viewport rendered blank: the manifest's
+  `android.composable` (the registry key) was `"MobScene3dViewport"`, but
+  `Mob.UI.native_view(Mob.Scene3d.Viewport, ...)` looks up
+  `"Mob_Scene3d_Viewport"`, and without `android.factory` current mob_dev
+  generated no `MobNativeViewRegistry` registration at all. The manifest now
+  declares `composable: "Mob_Scene3d_Viewport"` + `factory:
+  "MobScene3dViewport"`, and `MobScene3dBridge.kt` adds the two-arg
+  `MobScene3dViewport(props, send)` overload the generated factory calls.
+  Requires mob_dev >= 0.6.31 (AndroidBootstrap factory support).
+
 ## [0.1.1] - 2026-10-04
 
 ### Changed

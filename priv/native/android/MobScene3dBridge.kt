@@ -15,13 +15,9 @@
 //    main thread and every Filament call stays there (the spike's binding
 //    threading contract). Ops apply between frames.
 //
-// Host wiring (documented in the manifest host_requirements): the app
-// registers the composable once, e.g. in MainActivity.onCreate after
-// MobPluginBootstrap.registerAll:
-//
-//   MobNativeViewRegistry.register("Mob_Scene3d_Viewport") { props, _send ->
-//       io.mob.scene3d.MobScene3dViewport(props)
-//   }
+// Registration: the manifest's ui_components android.factory makes mob_dev
+// generate MobPluginBootstrap's MobNativeViewRegistry.register(
+// "Mob_Scene3d_Viewport") call to the two-argument MobScene3dViewport below.
 package io.mob.scene3d
 
 import android.content.Context
@@ -671,6 +667,16 @@ object Scene3dShadow {
 }
 
 // ── The composable factory ─────────────────────────────────────────────────
+
+/**
+ * The generated registration's factory: mob_dev calls it with the props and
+ * the host's native event sender (typed in the host package, hence `Any?`).
+ * Picks and animation events go over the plugin's own NIF wire, not `send`.
+ */
+@Composable
+fun MobScene3dViewport(props: Map<String, Any?>, @Suppress("UNUSED_PARAMETER") send: Any?) {
+    MobScene3dViewport(props)
+}
 
 @Composable
 fun MobScene3dViewport(props: Map<String, Any?>) {
