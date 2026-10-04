@@ -10,6 +10,16 @@ with this file's section as the body, and publishes to Hex. See
 [mob's RELEASE.md](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 for the canonical process.
 
+## [0.1.1] - 2026-10-04
+
+### Changed
+
+- Releases are now signed with the shared mob first-party key (MOB-385).
+  `release.yml` verifies `MOB_PLUGIN_SIGN_KEY` derives the committed
+  `priv/mob_plugin.pub`, then runs `mix mob.plugin.sign` before publish, so
+  the package ships `priv/mob_plugin.sig` and passes mob_dev's trust gate.
+  Adds `mob_dev` as a dev/test dependency for the sign task.
+
 ## [0.1.0] - 2026-09-17
 
 ### Added

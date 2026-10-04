@@ -32,6 +32,10 @@ jobs:
       # `env.HEX_API_KEY != ''` so a missing secret skips cleanly instead
       # of failing with an auth error.
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      # Shared mob first-party signing key. The Sign step below regenerates
+      # priv/mob_plugin.sig from the CURRENT manifest before publish, so the
+      # published artifact's signature can never drift stale.
+      MOB_PLUGIN_SIGN_KEY: ${{ secrets.MOB_PLUGIN_SIGN_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,6 +143,35 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "package=$pkg" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify signing key matches committed public key (fail-safe before publish)
+        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false' && env.MOB_PLUGIN_SIGN_KEY != ''
+        run: |
+          # Derive the ed25519 public key from MOB_PLUGIN_SIGN_KEY and compare it to the
+          # committed priv/mob_plugin.pub. A mismatch means the secret is the wrong key
+          # (e.g. a per-repo key instead of the shared first-party key) and would publish
+          # a signature no host can verify — abort here rather than ship a broken release.
+          elixir -e '
+            priv = System.get_env("MOB_PLUGIN_SIGN_KEY") |> String.trim() |> Base.decode64!()
+            {pub, _} = :crypto.generate_key(:eddsa, :ed25519, priv)
+            committed = "priv/mob_plugin.pub" |> File.read!() |> String.trim() |> Base.decode64!()
+            if pub != committed do
+              IO.puts(:stderr, "::error::MOB_PLUGIN_SIGN_KEY does not derive the committed priv/mob_plugin.pub — refusing to publish. Set the secret to the shared mob first-party private key.")
+              System.halt(1)
+            end
+            IO.puts("signing key matches committed public key — OK")
+          '
+
+      - name: Sign plugin (regenerate signature from current manifest)
+        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false' && env.MOB_PLUGIN_SIGN_KEY != ''
+        run: |
+          pkg="${{ steps.hex_check.outputs.package }}"
+          mkdir -p ~/.mob/keys
+          printf '%s' "$MOB_PLUGIN_SIGN_KEY" > ~/.mob/keys/"$pkg".priv
+          chmod 600 ~/.mob/keys/"$pkg".priv
+          mix deps.get
+          mix mob.plugin.sign
+          rm -f ~/.mob/keys/"$pkg".priv
 
       - name: mix hex.publish
         if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
