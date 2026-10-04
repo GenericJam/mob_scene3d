@@ -32,10 +32,6 @@ jobs:
       # `env.HEX_API_KEY != ''` so a missing secret skips cleanly instead
       # of failing with an auth error.
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-      # Shared mob first-party signing key. The Sign step below regenerates
-      # priv/mob_plugin.sig from the CURRENT manifest before publish, so the
-      # published artifact's signature can never drift stale.
-      MOB_PLUGIN_SIGN_KEY: ${{ secrets.MOB_PLUGIN_SIGN_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -144,15 +140,23 @@ jobs:
             echo "package=$pkg" >> "$GITHUB_OUTPUT"
           fi
 
+      # The shared first-party signing key is scoped to ONLY the steps that
+      # need it (never job-level env), so third-party actions can't read it.
       - name: Require signing key (fail closed)
-        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false' && env.MOB_PLUGIN_SIGN_KEY == ''
+        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+        env:
+          MOB_PLUGIN_SIGN_KEY: ${{ secrets.MOB_PLUGIN_SIGN_KEY }}
         run: |
           # Never publish without re-signing: a committed .sig may be stale.
-          echo "::error::MOB_PLUGIN_SIGN_KEY secret is not set — refusing to publish an unsigned/stale-signed plugin."
-          exit 1
+          if [ -z "$MOB_PLUGIN_SIGN_KEY" ]; then
+            echo "::error::MOB_PLUGIN_SIGN_KEY secret is not set — refusing to publish an unsigned/stale-signed plugin."
+            exit 1
+          fi
 
       - name: Verify signing key matches committed public key (fail-safe before publish)
-        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false' && env.MOB_PLUGIN_SIGN_KEY != ''
+        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+        env:
+          MOB_PLUGIN_SIGN_KEY: ${{ secrets.MOB_PLUGIN_SIGN_KEY }}
         run: |
           # Derive the ed25519 public key from MOB_PLUGIN_SIGN_KEY and compare it to the
           # committed priv/mob_plugin.pub. A mismatch means the secret is the wrong key
@@ -170,7 +174,9 @@ jobs:
           '
 
       - name: Sign plugin (regenerate signature from current manifest)
-        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false' && env.MOB_PLUGIN_SIGN_KEY != ''
+        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+        env:
+          MOB_PLUGIN_SIGN_KEY: ${{ secrets.MOB_PLUGIN_SIGN_KEY }}
         run: |
           pkg="${{ steps.hex_check.outputs.package }}"
           mkdir -p ~/.mob/keys
