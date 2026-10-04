@@ -22,7 +22,9 @@
       # Registry key = Elixir module name, dots → underscores (the
       # Mob.Component convention).
       ios: %{view_module: "Mob_Scene3d_Viewport", swift_struct: "MobScene3dViewport"},
-      android: %{composable: "MobScene3dViewport"}
+      # composable is the registry key; factory opts into mob_dev's generated
+      # MobPluginBootstrap registration (qualified with the bridge package).
+      android: %{composable: "Mob_Scene3d_Viewport", factory: "MobScene3dViewport"}
     }
   ],
   ios: %{
@@ -42,6 +44,9 @@
     ]
   },
   host_requirements: [
+    "Android: needs mob_dev >= 0.6.31 (AndroidBootstrap `factory` support), " <>
+      "which generates the MobNativeViewRegistry registration for the " <>
+      "viewport — no hand registration in MainActivity.",
     "Android: filament-utils-android ships Java-17 bytecode — the app's " <>
       "build.gradle needs compileOptions/kotlinOptions jvmTarget 17 " <>
       "(mob_new templates pin 1.8; see the spike decision record).",
