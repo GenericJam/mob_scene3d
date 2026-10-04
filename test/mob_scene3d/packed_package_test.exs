@@ -26,6 +26,11 @@ defmodule MobScene3d.PackedPackageTest do
     assert File.exists?(Path.join(package, "priv/mob_plugin.exs"))
     refute File.exists?(Path.join(package, ".tool-versions"))
 
+    # The trust gate needs the shared first-party signature in the package.
+    assert File.exists?(Path.join(package, "priv/mob_plugin.pub"))
+    assert File.exists?(Path.join(package, "priv/mob_plugin.sig"))
+    assert MobDev.Plugin.Verify.verify_plugin(package) == :ok
+
     # Compile the package in isolation, reusing the repo's already-built
     # deps (mob is a prod dep) instead of a network deps.get — the mob_dev
     # toolchain_package_test pattern.

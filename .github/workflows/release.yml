@@ -144,6 +144,13 @@ jobs:
             echo "package=$pkg" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Require signing key (fail closed)
+        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false' && env.MOB_PLUGIN_SIGN_KEY == ''
+        run: |
+          # Never publish without re-signing: a committed .sig may be stale.
+          echo "::error::MOB_PLUGIN_SIGN_KEY secret is not set — refusing to publish an unsigned/stale-signed plugin."
+          exit 1
+
       - name: Verify signing key matches committed public key (fail-safe before publish)
         if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false' && env.MOB_PLUGIN_SIGN_KEY != ''
         run: |
