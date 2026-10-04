@@ -1,7 +1,7 @@
 defmodule MobScene3d.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/GenericJam/mob_scene3d"
 
   def project do
@@ -71,6 +71,9 @@ defmodule MobScene3d.MixProject do
   defp deps do
     [
       {:mob, "~> 0.7"},
+      # `mix mob.plugin.sign` — the release workflow signs priv/mob_plugin.exs
+      # with the shared first-party key before publish.
+      {:mob_dev, "~> 0.6", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false},
       # ex_slop — Credo plugin that catches AI-generated Elixir patterns
