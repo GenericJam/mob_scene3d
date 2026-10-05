@@ -118,6 +118,11 @@ IBL: a prefiltered specular cubemap plus spherical-harmonics irradiance.
 Filament's `cmgen` tool computes both from an equirectangular panorama
 (`.hdr`/`.exr`/`.png`, 2:1 aspect):
 
+> **Not rendered yet.** Neither applier loads these bundles today, so a
+> scene carrying an `%Environment{}` is refused at commit with
+> `{:error, {:unsupported, :environment}}`. The tool below is kept so the
+> assets are ready when an applier declares the `"environment"` capability.
+
 ```
 scripts/fetch_cmgen.sh                                    # one-time vendor (or have cmgen on $PATH)
 mix scene3d.assets --ibl studio.hdr --out priv/scene3d_assets/env/studio

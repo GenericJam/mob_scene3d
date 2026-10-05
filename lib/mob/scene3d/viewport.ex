@@ -6,8 +6,9 @@ defmodule Mob.Scene3d.Viewport do
   prop on every render, and this component diffs it against the last
   **committed** IR held in its own state — so coalesced re-renders diff
   against what actually reached the native applier, never against dropped
-  intents. Only `render/1`'s output (`viewport_id`, `width`, `height`)
-  rides the 2D JSON tree; scene content crosses on the dedicated NIF wire.
+  intents. Only `render/1`'s output (`viewport_id`, `width`, `height`,
+  `max_asset_bytes`, optional `background`) rides the 2D JSON tree; scene
+  content crosses on the dedicated NIF wire.
 
   Teardown rides mob #111 component reclamation: when the owning screen
   exits (or the viewport leaves the tree), `terminate/2` destroys the
@@ -34,6 +35,7 @@ defmodule Mob.Scene3d.Viewport do
         width: props[:width] || 340,
         height: props[:height] || 420,
         background: props[:background],
+        max_asset_bytes: props[:max_asset_bytes] || Mob.Scene3d.default_max_asset_bytes(),
         pick_tag: props[:on_pick] || :pick,
         anim_tag: props[:on_animation_done] || :animation_done,
         screen_pid: props[:screen_pid],
@@ -50,6 +52,7 @@ defmodule Mob.Scene3d.Viewport do
         width: props[:width] || socket.assigns.width,
         height: props[:height] || socket.assigns.height,
         background: Map.get(props, :background, socket.assigns.background),
+        max_asset_bytes: props[:max_asset_bytes] || socket.assigns.max_asset_bytes,
         pick_tag: props[:on_pick] || socket.assigns.pick_tag,
         anim_tag: props[:on_animation_done] || socket.assigns.anim_tag,
         screen_pid: props[:screen_pid] || socket.assigns.screen_pid
@@ -63,7 +66,8 @@ defmodule Mob.Scene3d.Viewport do
     base = %{
       viewport_id: assigns.viewport_id,
       width: assigns.width,
-      height: assigns.height
+      height: assigns.height,
+      max_asset_bytes: assigns.max_asset_bytes
     }
 
     if is_integer(assigns.background),

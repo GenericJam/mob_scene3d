@@ -40,6 +40,11 @@ defmodule Mob.Scene3d do
   alias Mob.Scene3d.{Native, Projection, Wire}
 
   @scene_timeout 2_000
+  # Per-viewport cap on one model file. The native applier checks the file
+  # size before reading a byte and refuses anything bigger with
+  # {:bad_asset, ref, "too_large"}: one oversized import must not exhaust
+  # the native heap.
+  @default_max_asset_bytes 64 * 1024 * 1024
   # Host-side rpc wrappers add headroom over the device-local await so the
   # local :timeout (honest, per-query) wins over a blunt :badrpc.
   @rpc_headroom 3_000
@@ -72,6 +77,12 @@ defmodule Mob.Scene3d do
       play_id}` tuple as-is. `play_id` is the correlation token from the
       `%Mob.Scene3d.IR.Animation{}` the screen set; delivered at most once
       per `play_id` (a replay is a new `play_id`).
+    * `:max_asset_bytes` — the largest model file (bytes) this viewport
+      will load, default #{@default_max_asset_bytes} (64 MiB). The native
+      applier reads the file size before reading the file and refuses a
+      bigger one with an async `{:bad_asset, ref, "too_large"}` error.
+      Asset files are read off the render thread either way; a model shows
+      `"status" => "loading"` in `scene/1` until it is ready.
   """
   @spec viewport(keyword()) :: map()
   def viewport(opts) when is_list(opts) do
@@ -99,6 +110,18 @@ defmodule Mob.Scene3d do
               "Mob.Scene3d.viewport :background must be a 0xAARRGGBB integer, got: #{inspect(other)}"
     end
 
+    case Keyword.get(opts, :max_asset_bytes) do
+      nil ->
+        :ok
+
+      bytes when is_integer(bytes) and bytes > 0 ->
+        :ok
+
+      other ->
+        raise ArgumentError,
+              "Mob.Scene3d.viewport :max_asset_bytes must be a positive integer, got: #{inspect(other)}"
+    end
+
     # render/1 runs in the screen server process, so self() here is the
     # screen pid — the event delivery target the Viewport component
     # forwards to (the component itself lives in its own process).
@@ -112,6 +135,12 @@ defmodule Mob.Scene3d do
   end
 
   @doc """
+  The default `:max_asset_bytes` budget for `viewport/1`: 64 MiB.
+  """
+  @spec default_max_asset_bytes() :: pos_integer()
+  def default_max_asset_bytes, do: @default_max_asset_bytes
+
+  @doc """
   Diff `next` against `committed` and ship the patch for `viewport_id`.
 
   Returns `{:ok, next}` (the new committed IR — hold onto it for the next
@@ -121,6 +150,11 @@ defmodule Mob.Scene3d do
       was shipped
     * `{:unsupported, op}` — the native applier's caps do not declare an op
       this patch needs (version skew, degraded loudly)
+    * `{:unsupported, :environment}` — the patch adds or changes a
+      `Mob.Scene3d.IR.Environment`. No native applier renders image-based
+      lighting or KTX skyboxes yet (none declares the `"environment"`
+      feature), so the commit is refused instead of reporting a scene that
+      never renders
     * `{:schema_mismatch, native, ours}` — the applier speaks a different
       wire schema
     * `:nif_not_loaded` — no native half (host BEAM, or a device build
@@ -148,8 +182,9 @@ defmodule Mob.Scene3d do
   `{:ok, %{schema: n, ops: MapSet, features: MapSet}}`, or
   `{:error, :nif_not_loaded}` on a BEAM without the native half. `features`
   declares additive grammar extensions riding existing ops (currently
-  `"material_scope"`); absent on older native halves, decoding as the empty
-  set.
+  `"material_scope"`; `"environment"` is reserved for an applier that
+  renders `Mob.Scene3d.IR.Environment`); absent on older native halves,
+  decoding as the empty set.
   """
   @spec caps() ::
           {:ok,
@@ -188,7 +223,8 @@ defmodule Mob.Scene3d do
 
     * `"world_transform"` — 16 floats, column-major, from Filament's
       `TransformManager`
-    * `"status"` — `"ready"` or `"error"` (+ `"status_detail"`)
+    * `"status"` — `"ready"`, `"loading"` (a model whose file is still being
+      read off the render thread), or `"error"` (+ `"status_detail"`)
     * `"animation_state"` (models with an animation) — `%{"name", "play_id",
       "time", "done", "paused", "loop"}` read from the applier's clip clock,
       or `%{"name", "play_id", "error" => "unknown_animation"}` when the
@@ -574,15 +610,20 @@ defmodule Mob.Scene3d do
 
   # Version-skew guard: every op in the patch must be declared by the native
   # caps, the wire schema must agree, and grammar extensions riding existing
-  # ops (scoped material overrides) must be declared as features. Loud
-  # errors, never silent drops — an old applier would silently tint every
-  # material instance (the exact bug scoping exists to fix), so the guard
-  # refuses before anything is encoded.
+  # ops (scoped material overrides, environments) must be declared as
+  # features. Loud errors, never silent drops — an old applier would
+  # silently tint every material instance (the exact bug scoping exists to
+  # fix), and appliers up to 0.1.2 accepted an environment, echoed it in
+  # readback and rendered nothing, so the guard refuses before anything is
+  # encoded.
   defp guard_ops(ops) do
     with {:ok, %{schema: schema, ops: supported, features: features}} <- caps() do
       cond do
         schema != Wire.schema() ->
           {:error, {:schema_mismatch, schema, Wire.schema()}}
+
+        Enum.any?(ops, &environment_op?/1) and not MapSet.member?(features, "environment") ->
+          {:error, {:unsupported, :environment}}
 
         missing = Enum.find(ops, &(not MapSet.member?(supported, Wire.op_name(&1)))) ->
           {:error, {:unsupported, elem(missing, 0)}}
@@ -611,6 +652,14 @@ defmodule Mob.Scene3d do
   defp scoped_material?(materials) when is_list(materials), do: true
   defp scoped_material?(%IR.Material{scope: scope}), do: not is_nil(scope)
   defp scoped_material?(_other), do: false
+
+  defp environment_op?({:set_environment, _id, _environment}), do: true
+
+  defp environment_op?({tag, %Entity{data: %IR.Environment{}}})
+       when tag in [:add_entity, :replace_entity],
+       do: true
+
+  defp environment_op?(_op), do: false
 
   defp ship(viewport_id, ops) do
     patch = ops |> Enum.map(&resolve_op_assets/1) |> Wire.encode_patch()

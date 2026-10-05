@@ -10,6 +10,40 @@ with this file's section as the body, and publishes to Hex. See
 [mob's RELEASE.md](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 for the canonical process.
 
+## [0.1.3] - 2026-10-05
+
+Fixes from the Operator v1 release review (MOB-398).
+
+### Changed
+
+- **Environments are refused instead of silently ignored.** Neither applier
+  renders IBL or KTX skyboxes, yet both declared `set_environment`, accepted
+  `%Mob.Scene3d.IR.Environment{}`, logged "not wired yet", returned `:ok`
+  and echoed the entity in `scene/1` readback. Now `commit/3` returns
+  `{:error, {:unsupported, :environment}}` for any patch that adds or
+  changes an environment unless the applier declares the `"environment"`
+  caps feature (none does yet); both natives drop `set_environment` from
+  their caps (it is now `{:unknown_op, "set_environment"}`) and refuse an
+  environment entity in a raw patch with `["unsupported","environment"]`.
+  Nothing is echoed in readback. Use the viewport's `:background` for a
+  plain clear colour.
+- **Model files load off the render thread, within a size budget.** The
+  Android applier read each `.glb` with `File.readBytes()` and copied it
+  into a direct buffer on the main thread; iOS read it with
+  `dataWithContentsOfFile` there too, with no size limit. Both now check
+  the file size first against the new `Mob.Scene3d.viewport/1` option
+  `:max_asset_bytes` (default 64 MiB, `Mob.Scene3d.default_max_asset_bytes/0`),
+  read the file once on a shared background IO thread/queue (Android:
+  straight into a direct `ByteBuffer`, no heap copy), and hand only gltfio
+  asset creation back to the render thread at the top of the next frame.
+  An over-budget file fails with the existing async error event,
+  `["bad_asset", ref, "too_large"]` (`"out_of_memory"` if the direct
+  allocation itself fails, `"load_failed"` as before otherwise). Models
+  report `"status" => "loading"` in `scene/1` until their file has been
+  read and built; several models sharing one asset share one read.
+- iOS shadow validation reports `{:unknown_op, op}` before
+  `{:unknown_entity, id}`, matching the Kotlin applier.
+
 ## [0.1.2] - 2026-10-04
 
 ### Fixed

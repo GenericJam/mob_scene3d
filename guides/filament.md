@@ -49,7 +49,7 @@ the version currently linked.
 | `Model` (asset `.glb`)| `gltfio` asset instance + `RenderableManager`     |
 | `Material` override   | Per-instance `MaterialInstance` parameter set     |
 | `Light`               | `LightManager` component (directional, point, …)  |
-| `Environment` (IBL)   | `IndirectLight` (KTX cubemap + spherical harm.)   |
+| `Environment` (IBL)   | `IndirectLight` + `Skybox` — **not wired yet**: commits are refused with `{:unsupported, :environment}` |
 | `Camera`              | Filament `Camera`                                 |
 | Animation channel     | `gltfio` `Animator` channel                       |
 | Pick                  | `View::pick` ray query                            |
