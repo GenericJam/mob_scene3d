@@ -40,10 +40,10 @@ defmodule Mob.Scene3d do
   alias Mob.Scene3d.{Native, Projection, Wire}
 
   @scene_timeout 2_000
-  # Per-viewport cap on one model file. The native applier checks the file
-  # size before reading a byte and refuses anything bigger with
-  # {:bad_asset, ref, "too_large"}: one oversized import must not exhaust
-  # the native heap.
+  # Per-viewport cap on one model file's size. The native applier checks it
+  # before reading a byte and refuses anything bigger with
+  # {:bad_asset, ref, "too_large"}, so one oversized import is never read
+  # into memory.
   @default_max_asset_bytes 64 * 1024 * 1024
   # Host-side rpc wrappers add headroom over the device-local await so the
   # local :timeout (honest, per-query) wins over a blunt :badrpc.
@@ -79,10 +79,13 @@ defmodule Mob.Scene3d do
       per `play_id` (a replay is a new `play_id`).
     * `:max_asset_bytes` — the largest model file (bytes) this viewport
       will load, default #{@default_max_asset_bytes} (64 MiB). The native
-      applier reads the file size before reading the file and refuses a
-      bigger one with an async `{:bad_asset, ref, "too_large"}` error.
-      Asset files are read off the render thread either way; a model shows
-      `"status" => "loading"` in `scene/1` until it is ready.
+      applier checks the file size before reading the file and refuses a
+      bigger one with an async `{:bad_asset, ref, "too_large"}` error. The
+      cap is on file size, per file: decoded texture memory can exceed it.
+      Files are read off the render thread; gltfio asset creation and
+      embedded-texture decoding still run on it, at the start of the next
+      frame. A model shows `"status" => "loading"` in `scene/1` until it is
+      built.
   """
   @spec viewport(keyword()) :: map()
   def viewport(opts) when is_list(opts) do

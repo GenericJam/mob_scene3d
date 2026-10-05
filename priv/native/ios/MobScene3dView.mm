@@ -152,13 +152,14 @@ NSDictionary *s3dReadAssetFile(NSString *path, unsigned long long budget) {
   unsigned long long size = (unsigned long long)st.st_size;
   if (size > budget || size > UINT32_MAX)
     return s3dReadFailure(path, size, @"too_large");
-  NSData *data = [NSData dataWithContentsOfFile:path options:0 error:nil];
-  if (data == nil)
+  // Read at most `size` bytes (the checked size), so a file that grew after
+  // the stat can never push the read past the budget.
+  NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+  NSData *data = [handle readDataUpToLength:(NSUInteger)size error:nil];
+  [handle closeAndReturnError:nil];
+  if (data == nil || data.length != size)
     return s3dReadFailure(path, size, @"load_failed");
-  // The file may have grown between stat and read.
-  if (data.length > budget)
-    return s3dReadFailure(path, data.length, @"too_large");
-  return @{@"path" : path, @"size" : @(data.length), @"data" : data};
+  return @{@"path" : path, @"size" : @(size), @"data" : data};
 }
 
 double jnum(id value, double fallback) {
@@ -1350,8 +1351,11 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
 }
 
 - (void)enqueueFinishedRead:(NSDictionary *)read {
-  if (!_destroyed)
-    [_finishedReads addObject:read];
+  if (_destroyed) {
+    _loadingAssets.erase(std::string([read[@"path"] UTF8String]));
+    return;
+  }
+  [_finishedReads addObject:read];
 }
 
 /// Main thread, top of the tick: turn landed reads into gltfio assets and

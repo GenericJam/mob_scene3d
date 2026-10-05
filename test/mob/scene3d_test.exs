@@ -249,6 +249,21 @@ defmodule Mob.Scene3dTest do
       refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
     end
 
+    test "set_environment and a replace into an environment are refused too" do
+      # A committed environment (from a pre-0.1.3 commit) whose intensity
+      # changes diffs to set_environment; a group re-kinded into an
+      # environment diffs to replace_entity. Both carry the unrendered kind.
+      committed = lit_scene(%Environment{ibl: "env/studio"})
+      brighter = lit_scene(%Environment{ibl: "env/studio", intensity: 50_000.0})
+      assert {:error, {:unsupported, :environment}} = Scene3d.commit("vp", committed, brighter)
+
+      grouped = IR.new(Map.values(probe_scene().entities) ++ [%Entity{id: "env"}])
+      rekinded = lit_scene(%Environment{skybox: "env/studio"})
+      assert {:error, {:unsupported, :environment}} = Scene3d.commit("vp", grouped, rekinded)
+
+      refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
+    end
+
     test "an environment ships once the applier declares the environment feature" do
       env_caps =
         %{"schema" => Wire.schema(), "ops" => Wire.v1_op_names(), "features" => ["environment"]}

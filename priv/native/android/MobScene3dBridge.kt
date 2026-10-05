@@ -1753,7 +1753,17 @@ class Scene3dView(
     private fun requestRead(path: String) {
         if (!loadingAssets.add(path)) return
         val budget = maxAssetBytes
-        io.execute { finishedReads.add(readAssetFile(path, budget)) }
+        io.execute {
+            // Always post a result: an escaped throwable would kill the app
+            // (default uncaught handler) and strand the path as loading.
+            val read =
+                try {
+                    readAssetFile(path, budget)
+                } catch (t: Throwable) {
+                    AssetRead(path, -1, null, "load_failed")
+                }
+            finishedReads.add(read)
+        }
     }
 
     /** Render thread, top of doFrame: turn landed reads into gltfio assets. */

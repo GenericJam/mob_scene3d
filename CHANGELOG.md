@@ -14,7 +14,7 @@ for the canonical process.
 
 Fixes from the Operator v1 release review (MOB-398).
 
-### Changed
+### Breaking
 
 - **Environments are refused instead of silently ignored.** Neither applier
   renders IBL or KTX skyboxes, yet both declared `set_environment`, accepted
@@ -25,17 +25,26 @@ Fixes from the Operator v1 release review (MOB-398).
   caps feature (none does yet); both natives drop `set_environment` from
   their caps (it is now `{:unknown_op, "set_environment"}`) and refuse an
   environment entity in a raw patch with `["unsupported","environment"]`.
-  Nothing is echoed in readback. Use the viewport's `:background` for a
-  plain clear colour.
+  Nothing is echoed in readback. **Migration:** a scene that still contains
+  an `%Environment{}` now has every commit refused (the viewport stays on
+  its last committed scene, blank on first mount) where 0.1.2 rendered
+  everything but the never-implemented IBL. Remove the environment entity;
+  use the viewport's `:background` for a plain clear colour.
+
+### Changed
+
 - **Model files load off the render thread, within a size budget.** The
   Android applier read each `.glb` with `File.readBytes()` and copied it
   into a direct buffer on the main thread; iOS read it with
   `dataWithContentsOfFile` there too, with no size limit. Both now check
   the file size first against the new `Mob.Scene3d.viewport/1` option
   `:max_asset_bytes` (default 64 MiB, `Mob.Scene3d.default_max_asset_bytes/0`),
-  read the file once on a shared background IO thread/queue (Android:
-  straight into a direct `ByteBuffer`, no heap copy), and hand only gltfio
-  asset creation back to the render thread at the top of the next frame.
+  read exactly that many bytes once on a shared background IO thread/queue
+  (Android: `FileChannel` straight into a direct `ByteBuffer`, no
+  intermediate `ByteArray`), and hand gltfio asset creation back to the
+  render thread at the top of the next frame. The cap is on file size per
+  file; gltfio parsing and embedded-texture decoding still run on the
+  render thread.
   An over-budget file fails with the existing async error event,
   `["bad_asset", ref, "too_large"]` (`"out_of_memory"` if the direct
   allocation itself fails, `"load_failed"` as before otherwise). Models

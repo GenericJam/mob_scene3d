@@ -210,6 +210,7 @@ defmodule Mob.Scene3d.WireTest do
         {~s(["unknown_material","pawn","bogus"]), {:unknown_material, "pawn", "bogus"}},
         {~s(["unsupported","animation"]), {:unsupported, :animation}},
         {~s(["unsupported","material_scope"]), {:unsupported, :material_scope}},
+        {~s(["unsupported","environment"]), {:unsupported, :environment}},
         {~s(["no_viewport","scene"]), {:no_viewport, "scene"}}
       ]
 
