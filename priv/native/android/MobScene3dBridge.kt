@@ -1760,6 +1760,7 @@ class Scene3dView(
                 try {
                     readAssetFile(path, budget)
                 } catch (t: Throwable) {
+                    android.util.Log.w("scene3d", "asset read failed unexpectedly: $path", t)
                     AssetRead(path, -1, null, "load_failed")
                 }
             finishedReads.add(read)
