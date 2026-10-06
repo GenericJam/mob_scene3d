@@ -12,6 +12,10 @@
 // navVersion root reset (any push/pop transition rebuilds the SwiftUI tree
 // and recreates this view).
 //
+// Model files are read on a shared serial IO queue (size budget checked
+// before reading); only gltfio asset creation runs on the main thread, at
+// the top of the next tick.
+//
 // Shadows are gated OFF under TARGET_OS_SIMULATOR: the Metal-on-simulator
 // shadow pass zeroes the direct-light term (spike landmine 7). Physical
 // Metal renders shadows.
@@ -62,7 +66,9 @@
 #include <deque>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 using namespace filament;
@@ -113,6 +119,48 @@ struct S3dAssetEntry {
   FilamentAsset *asset = nullptr;
   std::deque<FilamentInstance *> freeInstances;
 };
+
+// Mirrors Mob.Scene3d.default_max_asset_bytes/0: 64 MiB.
+constexpr long long kS3dDefaultMaxAssetBytes = 64LL * 1024 * 1024;
+
+// One serial IO queue shared by every viewport: reads never run on the
+// main (render) thread, and never as a burst of parallel budget-sized
+// allocations.
+dispatch_queue_t s3dIoQueue() {
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    queue = dispatch_queue_create(
+        "io.mob.scene3d.io",
+        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
+                                                QOS_CLASS_UTILITY, 0));
+  });
+  return queue;
+}
+
+NSDictionary *s3dReadFailure(NSString *path, unsigned long long size,
+                             NSString *reason) {
+  return @{@"path" : path, @"size" : @(size), @"failure" : reason};
+}
+
+/// IO queue. Checks the size against `budget` before reading a byte, then
+/// reads the file once. Returns {path, size, data} or {path, size, failure}.
+NSDictionary *s3dReadAssetFile(NSString *path, unsigned long long budget) {
+  struct stat st;
+  if (stat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode))
+    return s3dReadFailure(path, 0, @"load_failed");
+  unsigned long long size = (unsigned long long)st.st_size;
+  if (size > budget || size > UINT32_MAX)
+    return s3dReadFailure(path, size, @"too_large");
+  // Read at most `size` bytes (the checked size), so a file that grew after
+  // the stat can never push the read past the budget.
+  NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+  NSData *data = [handle readDataUpToLength:(NSUInteger)size error:nil];
+  [handle closeAndReturnError:nil];
+  if (data == nil || data.length != size)
+    return s3dReadFailure(path, size, @"load_failed");
+  return @{@"path" : path, @"size" : @(size), @"data" : data};
+}
 
 double jnum(id value, double fallback) {
   return [value isKindOfClass:[NSNumber class]] ? [value doubleValue]
@@ -225,6 +273,11 @@ NSString *s3d_json_string(NSString *value) {
 
   std::map<std::string, S3dRec> _registry;
   std::map<std::string, S3dAssetEntry> _assets;
+  // Paths with an IO-queue read in flight; records waiting on one carry
+  // status "loading". Finished reads queue here (main thread only) and
+  // become gltfio assets at the top of the next tick.
+  std::set<std::string> _loadingAssets;
+  NSMutableArray<NSDictionary *> *_finishedReads;
   std::string _irCameraId;
 
   NSUInteger _frameCount;
@@ -263,6 +316,8 @@ NSString *s3d_json_string(NSString *value) {
   if (self) {
     _viewportId = [viewportId copy];
     _pendingSamples = [NSMutableArray array];
+    _finishedReads = [NSMutableArray array];
+    _maxAssetBytes = kS3dDefaultMaxAssetBytes;
     self.contentScaleFactor = UIScreen.mainScreen.scale;
     // Tap capture: a single tap inside the viewport rides the same native
     // pick path pick/3 uses. Hits on pickable models become pick events;
@@ -403,6 +458,8 @@ NSString *s3d_json_string(NSString *value) {
     return;
   [self recordFrameDelta];
 
+  // Landed asset reads first: ops in this tick then see the asset.
+  [self drainFinishedReads];
   MobScene3dDrain *drain = MobScene3dDrainTick(self.viewportId);
   if (drain.reset)
     [self clearScene];
@@ -678,8 +735,6 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
     [self setCameraParams:op[1] camera:op[2]];
   } else if ([name isEqualToString:@"set_light"]) {
     [self setLightParams:op[1] light:op[2]];
-  } else if ([name isEqualToString:@"set_environment"]) {
-    [self setEnvironmentParams:op[1] environment:op[2]];
   }
 }
 
@@ -752,31 +807,34 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
     [self buildLight:rec data:data];
   } else if ([kind isEqualToString:@"camera"]) {
     [self buildCamera:rec entityId:entityId];
-  } else if ([kind isEqualToString:@"environment"]) {
-    [self setEnvironmentParams:entityId environment:data];
   }
 }
 
 - (void)buildModel:(S3dRec *)rec data:(NSDictionary *)data {
   NSString *ref = data[@"asset"];
-  S3dAssetEntry *entry = [self loadAsset:ref];
-  FilamentInstance *instance = nullptr;
-  if (entry != nullptr) {
-    if (!entry->freeInstances.empty()) {
-      instance = entry->freeInstances.front();
-      entry->freeInstances.pop_front();
-    } else {
-      instance = _assetLoader->createInstance(entry->asset);
-    }
-  }
-  if (instance == nullptr) {
-    rec->status = "error";
-    rec->statusDetail = "bad_asset";
-    NSString *error = [NSString
-        stringWithFormat:@"[\"bad_asset\",\"%@\",\"load_failed\"]", ref];
-    MobScene3dDeliverError(self.viewportId, error);
+  auto it = _assets.find(std::string(ref.UTF8String));
+  if (it == _assets.end()) {
+    // Not loaded: the file is read on the IO queue and drainFinishedReads
+    // builds (or fails) this model when the read lands.
+    rec->status = "loading";
+    rec->statusDetail.clear();
+    [self requestRead:ref];
     return;
   }
+  S3dAssetEntry *entry = &it->second;
+  FilamentInstance *instance = nullptr;
+  if (!entry->freeInstances.empty()) {
+    instance = entry->freeInstances.front();
+    entry->freeInstances.pop_front();
+  } else {
+    instance = _assetLoader->createInstance(entry->asset);
+  }
+  if (instance == nullptr) {
+    [self failModel:rec ref:ref reason:@"load_failed"];
+    return;
+  }
+  rec->status = "ready";
+  rec->statusDetail.clear();
   rec->instance = instance;
   rec->assetRef = std::string(ref.UTF8String);
   rec->overridden = false;
@@ -1175,22 +1233,6 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   }
 }
 
-- (void)setEnvironmentParams:(NSString *)entityId
-                 environment:(NSDictionary *)environment {
-  S3dRec *rec = [self rec:entityId];
-  if (rec == nullptr)
-    return;
-  NSMutableDictionary *tagged = [environment mutableCopy];
-  tagged[@"kind"] = @"environment";
-  rec->json[@"data"] = tagged;
-  // IBL/skybox KTX loading is the asset-pipeline bead (mob_scene3d-392).
-  // Accepted and recorded for readback; loudly logged, never silent.
-  NSLog(
-      @"[scene3d] environment accepted but IBL/skybox loading is not wired yet "
-      @"(bead mob_scene3d-392): %@",
-      environment[@"ibl"]);
-}
-
 // ── per-frame state pokes ────────────────────────────────────────────────
 
 - (void)applyParent:(NSString *)entityId {
@@ -1283,14 +1325,81 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   camera->setProjection(fov, aspect, near, far, Camera::Fov::VERTICAL);
 }
 
-- (S3dAssetEntry *)loadAsset:(NSString *)path {
+- (void)failModel:(S3dRec *)rec ref:(NSString *)ref reason:(NSString *)reason {
+  rec->status = "error";
+  rec->statusDetail = "bad_asset";
+  NSString *error =
+      [NSString stringWithFormat:@"[\"bad_asset\",%@,%@]", s3d_json_string(ref),
+                                 s3d_json_string(reason)];
+  MobScene3dDeliverError(self.viewportId, error);
+}
+
+- (void)requestRead:(NSString *)path {
+  if (!_loadingAssets.insert(std::string(path.UTF8String)).second)
+    return;
+  unsigned long long budget =
+      _maxAssetBytes > 0 ? (unsigned long long)_maxAssetBytes : 0;
+  __weak MobScene3dView *weakSelf = self;
+  dispatch_async(s3dIoQueue(), ^{
+    NSDictionary *read = s3dReadAssetFile(path, budget);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MobScene3dView *view = weakSelf;
+      if (view != nil)
+        [view enqueueFinishedRead:read];
+    });
+  });
+}
+
+- (void)enqueueFinishedRead:(NSDictionary *)read {
+  if (_destroyed) {
+    _loadingAssets.erase(std::string([read[@"path"] UTF8String]));
+    return;
+  }
+  [_finishedReads addObject:read];
+}
+
+/// Main thread, top of the tick: turn landed reads into gltfio assets and
+/// build (or fail) every model waiting on them.
+- (void)drainFinishedReads {
+  if (_finishedReads.count == 0)
+    return;
+  NSArray<NSDictionary *> *reads = [_finishedReads copy];
+  [_finishedReads removeAllObjects];
+  for (NSDictionary *read in reads) {
+    NSString *path = read[@"path"];
+    _loadingAssets.erase(std::string(path.UTF8String));
+    NSData *data = read[@"data"];
+    S3dAssetEntry *entry =
+        data != nil ? [self createAsset:path data:data] : nullptr;
+    NSString *reason =
+        read[@"failure"] ?: (entry == nullptr ? @"load_failed" : nil);
+    if (reason != nil) {
+      NSLog(@"[scene3d] asset %@: %@ (%@ bytes, budget %lld)", path, reason,
+            read[@"size"], _maxAssetBytes);
+    }
+    for (auto &pair : _registry) {
+      S3dRec &rec = pair.second;
+      if (rec.status != "loading")
+        continue;
+      NSDictionary *recData = rec.json[@"data"];
+      if (![recData isKindOfClass:[NSDictionary class]] ||
+          ![recData[@"asset"] isEqual:path])
+        continue;
+      if (reason != nil) {
+        [self failModel:&rec ref:path reason:reason];
+      } else {
+        [self buildModel:&rec data:recData];
+        [self applyVisibility:@(pair.first.c_str())];
+      }
+    }
+  }
+}
+
+- (S3dAssetEntry *)createAsset:(NSString *)path data:(NSData *)data {
   std::string key(path.UTF8String);
   auto it = _assets.find(key);
   if (it != _assets.end())
     return &it->second;
-  NSData *data = [NSData dataWithContentsOfFile:path];
-  if (data == nil)
-    return nullptr;
   // Instanced creation, source data retained: both are what makes
   // createInstance work for later entities sharing this ref.
   FilamentInstance *first = nullptr;
@@ -1456,6 +1565,8 @@ static void s3d_sample_done(void *buffer, size_t size, void *user) {
   if (_engine == nullptr)
     return;
   _destroyed = YES;
+  [_finishedReads removeAllObjects];
+  _loadingAssets.clear();
   [self clearScene];
   for (auto &pair : _assets) {
     _assetLoader->destroyAsset(pair.second.asset);

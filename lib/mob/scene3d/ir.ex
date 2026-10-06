@@ -398,6 +398,13 @@ defmodule Mob.Scene3d.IR.Environment do
   `cmgen`-precomputed KTX bundles under `priv/scene3d_assets/env/`; both are
   **structural**. `intensity` (lux) is per-frame. At most one environment per
   scene (Filament binds one `IndirectLight` and one `Skybox` per scene).
+
+  **Not rendered yet.** Neither native applier loads IBL or KTX skyboxes, so
+  `Mob.Scene3d.commit/3` refuses any patch that adds or changes an
+  environment with `{:error, {:unsupported, :environment}}` until an applier
+  declares the `"environment"` capability feature. The struct stays so scene
+  code and `Mob.Scene3d.IR.Patch` keep a stable grammar. For a plain
+  background colour use the viewport's `:background` option.
   """
 
   defstruct ibl: nil, skybox: nil, intensity: 30_000.0

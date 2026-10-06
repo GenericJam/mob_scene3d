@@ -37,11 +37,13 @@ defmodule Mob.Scene3d.NativeMock do
   def caps do
     record({:caps})
 
+    # The shipping native caps: every v1 op except set_environment (no
+    # applier renders environments yet), plus the material_scope feature.
     default =
       {:ok,
        %{
          "schema" => Wire.schema(),
-         "ops" => Wire.v1_op_names(),
+         "ops" => Wire.v1_op_names() -- ["set_environment"],
          "features" => ["material_scope"]
        }
        |> :json.encode()

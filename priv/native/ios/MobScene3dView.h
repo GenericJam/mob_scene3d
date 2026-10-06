@@ -16,6 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// skybox. Settable at any time — the skybox is re-tinted in place.
 @property(nonatomic, strong, nullable) NSNumber *backgroundArgb;
 
+/// Largest model file (bytes) this viewport loads; bigger files fail with
+/// bad_asset "too_large" before a byte is read. Default 64 MiB. Read when
+/// a load starts, so a change applies to the next load.
+@property(nonatomic, assign) long long maxAssetBytes;
+
 @end
 
 NS_ASSUME_NONNULL_END

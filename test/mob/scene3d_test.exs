@@ -3,7 +3,7 @@ defmodule Mob.Scene3dTest do
 
   alias Mob.Scene3d
   alias Mob.Scene3d.IR
-  alias Mob.Scene3d.IR.{Camera, Entity, Light, Material, Model, Transform}
+  alias Mob.Scene3d.IR.{Camera, Entity, Environment, Light, Material, Model, Transform}
   alias Mob.Scene3d.NativeMock
   alias Mob.Scene3d.Wire
 
@@ -13,6 +13,10 @@ defmodule Mob.Scene3dTest do
       %Entity{id: "sun", data: %Light{type: :directional, intensity: 110_000.0}},
       %Entity{id: "probe", data: %Model{asset: "probe.glb"}}
     ])
+  end
+
+  defp lit_scene(environment) do
+    IR.new(Map.values(probe_scene().entities) ++ [%Entity{id: "env", data: environment}])
   end
 
   describe "commit/3 — patch shipping" do
@@ -212,6 +216,65 @@ defmodule Mob.Scene3dTest do
 
       assert [["set_material", "probe", [%{"scope" => "pawn_body"}, %{"scope" => "pawn_accent"}]]] =
                NativeMock.shipped_ops()
+    end
+
+    test "an environment is refused against the shipping caps, before the wire" do
+      # No applier renders IBL/KTX skyboxes yet: none declares the
+      # "environment" feature, so committing one must fail loudly rather
+      # than succeed and render nothing.
+      lit = lit_scene(%Environment{ibl: "env/studio"})
+
+      assert {:error, {:unsupported, :environment}} = Scene3d.commit("vp", IR.empty(), lit)
+      assert {:error, {:unsupported, :environment}} = Scene3d.commit("vp", probe_scene(), lit)
+      refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
+    end
+
+    test "an environment is refused even by a pre-0.1.3 applier that lists set_environment" do
+      # Appliers up to 0.1.2 declared set_environment, accepted the entity,
+      # echoed it in readback and drew nothing: the op list alone is not
+      # trusted, the feature is.
+      old_caps =
+        %{
+          "schema" => Wire.schema(),
+          "ops" => Wire.v1_op_names(),
+          "features" => ["material_scope"]
+        }
+        |> :json.encode()
+        |> IO.iodata_to_binary()
+
+      NativeMock.stub(:caps, {:ok, old_caps})
+      lit = lit_scene(%Environment{skybox: "env/studio"})
+
+      assert {:error, {:unsupported, :environment}} = Scene3d.commit("vp", IR.empty(), lit)
+      refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
+    end
+
+    test "set_environment and a replace into an environment are refused too" do
+      # A committed environment (from a pre-0.1.3 commit) whose intensity
+      # changes diffs to set_environment; a group re-kinded into an
+      # environment diffs to replace_entity. Both carry the unrendered kind.
+      committed = lit_scene(%Environment{ibl: "env/studio"})
+      brighter = lit_scene(%Environment{ibl: "env/studio", intensity: 50_000.0})
+      assert {:error, {:unsupported, :environment}} = Scene3d.commit("vp", committed, brighter)
+
+      grouped = IR.new(Map.values(probe_scene().entities) ++ [%Entity{id: "env"}])
+      rekinded = lit_scene(%Environment{skybox: "env/studio"})
+      assert {:error, {:unsupported, :environment}} = Scene3d.commit("vp", grouped, rekinded)
+
+      refute Enum.any?(NativeMock.calls(), &match?({:apply_patch, _, _}, &1))
+    end
+
+    test "an environment ships once the applier declares the environment feature" do
+      env_caps =
+        %{"schema" => Wire.schema(), "ops" => Wire.v1_op_names(), "features" => ["environment"]}
+        |> :json.encode()
+        |> IO.iodata_to_binary()
+
+      NativeMock.stub(:caps, {:ok, env_caps})
+      lit = IR.new([%Entity{id: "env", data: %Environment{ibl: "env/studio"}}])
+
+      assert {:ok, ^lit} = Scene3d.commit("vp", IR.empty(), lit)
+      assert [["add_entity", %{"data" => %{"kind" => "environment"}}]] = NativeMock.shipped_ops()
     end
 
     test "a schema mismatch is refused loudly" do

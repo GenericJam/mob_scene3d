@@ -32,7 +32,8 @@ defmodule Mob.Scene3d.ViewportTest do
     assert Viewport.render(socket.assigns) == %{
              viewport_id: "board",
              width: 300,
-             height: 400
+             height: 400,
+             max_asset_bytes: 64 * 1024 * 1024
            }
   end
 
@@ -125,6 +126,30 @@ defmodule Mob.Scene3d.ViewportTest do
 
     assert Mob.Scene3d.viewport(id: :board, background: 0xFFF2E6CB).props[:background] ==
              0xFFF2E6CB
+  end
+
+  test "max_asset_bytes: rides the render props, 64 MiB by default, kept across updates" do
+    socket = mounted(%{id: :board, screen_pid: self()})
+    assert Viewport.render(socket.assigns).max_asset_bytes == 64 * 1024 * 1024
+
+    socket = mounted(%{id: :board, screen_pid: self(), max_asset_bytes: 1_000_000})
+    assert Viewport.render(socket.assigns).max_asset_bytes == 1_000_000
+
+    {:ok, updated} = Viewport.update(%{id: :board, max_asset_bytes: 2_000_000}, socket)
+    assert Viewport.render(updated.assigns).max_asset_bytes == 2_000_000
+
+    {:ok, kept} = Viewport.update(%{id: :board}, updated)
+    assert Viewport.render(kept.assigns).max_asset_bytes == 2_000_000
+  end
+
+  test "Mob.Scene3d.viewport/1 refuses a non-positive or non-integer max_asset_bytes" do
+    for bad <- [0, -1, 1.5, "64MB"] do
+      assert_raise ArgumentError, ~r/max_asset_bytes must be a positive integer/, fn ->
+        Mob.Scene3d.viewport(id: :board, max_asset_bytes: bad)
+      end
+    end
+
+    assert Mob.Scene3d.viewport(id: :board, max_asset_bytes: 1).props[:max_asset_bytes] == 1
   end
 
   test "Mob.Scene3d.viewport/1 refuses a non-atom on_pick tag" do

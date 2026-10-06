@@ -23,12 +23,15 @@
 
 static NSString *const kOkJson = @"{\"ok\":true}";
 
+// No "set_environment" op and no "environment" feature: IBL/KTX skyboxes
+// are not rendered, so environment entities are refused (s3d_apply_op)
+// instead of accepted, echoed in readback and never drawn.
 static NSString *const kCapsJson =
     @"{\"schema\":1,\"ops\":[\"add_entity\",\"replace_entity\",\"remove_"
     @"entity\","
     @"\"set_parent\",\"set_transform\",\"set_visible\",\"set_pickable\","
-    @"\"set_material\",\"set_animation\",\"set_camera\",\"set_light\","
-    @"\"set_environment\"],\"features\":[\"material_scope\"]}";
+    @"\"set_material\",\"set_animation\",\"set_camera\",\"set_light\"],"
+    @"\"features\":[\"material_scope\"]}";
 
 @implementation MobScene3dDrain
 @end
@@ -266,6 +269,10 @@ static NSArray *_Nullable s3d_apply_op(
       return s3d_err(@[ @"duplicate_entity", eid ]);
     if (parent != nil && shadow[parent] == nil)
       return s3d_err(@[ @"unknown_parent", eid, parent ]);
+    // The Elixir caps guard refuses environments first; this covers raw
+    // patches.
+    if ([s3d_kind_of(entity) isEqualToString:@"environment"])
+      return s3d_err(@[ @"unsupported", @"environment" ]);
     NSArray *animError = s3d_animation_error(entity);
     if (animError != nil)
       return animError;
@@ -293,6 +300,18 @@ static NSArray *_Nullable s3d_apply_op(
     return nil;
   }
 
+  // An op this applier does not know (e.g. set_environment, dropped in
+  // 0.1.3) is unknown_op whatever its target, matching the Kotlin twin.
+  static NSSet<NSString *> *entityOps;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    entityOps = [NSSet setWithArray:@[
+      @"set_parent", @"set_transform", @"set_visible", @"set_pickable",
+      @"set_material", @"set_animation", @"set_camera", @"set_light"
+    ]];
+  });
+  if (![entityOps containsObject:name])
+    return s3d_err(@[ @"unknown_op", name ]);
   if (entity == nil)
     return s3d_err(@[ @"unknown_entity", eid ]);
   id value = op.count > 2 ? op[2] : [NSNull null];
@@ -335,8 +354,7 @@ static NSArray *_Nullable s3d_apply_op(
     return nil;
   }
   if ([name isEqualToString:@"set_camera"] ||
-      [name isEqualToString:@"set_light"] ||
-      [name isEqualToString:@"set_environment"]) {
+      [name isEqualToString:@"set_light"]) {
     NSString *kind = [name substringFromIndex:4];
     if (![s3d_kind_of(entity) isEqualToString:kind])
       return s3d_err(@[ @"kind_mismatch", eid, kind ]);
@@ -348,14 +366,6 @@ static NSArray *_Nullable s3d_apply_op(
       if (![current[@"type"] isEqual:next[@"type"]])
         return s3d_err(@[ @"structural_field", eid, @"light_type" ]);
     }
-    if ([name isEqualToString:@"set_environment"]) {
-      id cIbl = current[@"ibl"] ?: [NSNull null],
-         nIbl = next[@"ibl"] ?: [NSNull null];
-      id cSky = current[@"skybox"] ?: [NSNull null],
-         nSky = next[@"skybox"] ?: [NSNull null];
-      if (![cIbl isEqual:nIbl] || ![cSky isEqual:nSky])
-        return s3d_err(@[ @"structural_field", eid, @"environment_assets" ]);
-    }
     NSMutableDictionary *tagged = [next mutableCopy];
     tagged[@"kind"] = kind;
     shadow[eid] = s3d_put_field(entity, @"data", [tagged copy]);
@@ -366,18 +376,13 @@ static NSArray *_Nullable s3d_apply_op(
 
 static NSArray *_Nullable s3d_validate_result(
     NSDictionary<NSString *, NSDictionary *> *shadow) {
-  NSUInteger cameras = 0, environments = 0;
+  NSUInteger cameras = 0;
   for (NSDictionary *entity in shadow.allValues) {
-    NSString *kind = s3d_kind_of(entity);
-    if ([kind isEqualToString:@"camera"])
+    if ([s3d_kind_of(entity) isEqualToString:@"camera"])
       cameras++;
-    if ([kind isEqualToString:@"environment"])
-      environments++;
   }
   if (cameras > 1)
     return s3d_err(@[ @"invalid_result", @"multiple_cameras" ]);
-  if (environments > 1)
-    return s3d_err(@[ @"invalid_result", @"multiple_environments" ]);
   return nil;
 }
 
