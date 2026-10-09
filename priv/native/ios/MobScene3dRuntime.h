@@ -23,6 +23,13 @@ NS_ASSUME_NONNULL_BEGIN
 extern "C" {
 #endif
 
+/// The renderer's view class (MobScene3dView, defined in MobScene3dView.mm).
+/// The NIF and the renderer share the plugin's static archive
+/// (libmob_scene3d_nif.a), from which the linker takes only object files that
+/// something references. Swift creates the view by class name, which is no
+/// link-time reference, so the NIF calls this at load to keep the renderer in.
+Class MobScene3dRendererClass(void);
+
 /// Register the renderer for a viewport; returns bootstrap ops replaying the
 /// shadow registry (parents-first). Main thread.
 NSArray<NSArray *> *MobScene3dAttach(NSString *viewportId, NSObject *view);

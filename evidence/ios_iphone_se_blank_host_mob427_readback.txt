@@ -1,0 +1,56 @@
+
+[36mScanning for devices...[0m
+
+
+  [31m[1mWARNING: Kevin’s iPhone (00008110-001E1C3A34F8401E) is claimed by agent-device session "Scene3dIosPhone" (in /private/tmp/mob427/s3d).[0m
+  [31mUsing it because you named it; this may disrupt that agent's work.[0m
+
+  [36miOS[0m
+  ├── Kevin’s iPhone  00008110-001E1C3A34F8401E  found
+
+  Kevin’s iPhone  →  tunneling...  [32m✓[0m
+
+  Waiting for nodes...
+  s3d_ios@169.254.1.100 ...  [32m✓[0m
+
+[32mConnected cluster (1 node(s)):[0m
+  [32m✓[0m s3d_ios@169.254.1.100  [port 9101]
+cube entity: %{
+  "data" => %{
+    "animation" => nil,
+    "asset" => "/var/mobile/Containers/Data/Application/B7CA36B3-65FD-42B3-8CD2-5B4ABDF0C456/Documents/otp/s3d/priv/scene3d_assets/bevel_cube.glb",
+    "kind" => "model",
+    "material" => %{
+      "base_color" => [0.9, 0.05, 0.05, 1],
+      "emissive" => nil,
+      "metallic" => nil,
+      "roughness" => 0.8,
+      "scope" => nil
+    }
+  },
+  "id" => "cube",
+  "kind" => "model",
+  "material_state" => [
+    %{
+      "applied" => ["base_color", "roughness"],
+      "instances" => ["base_lit_opaque"],
+      "scope" => nil
+    }
+  ],
+  "nodes" => %{
+    "geometry_0" => [0.8660253882408142, 0.1710100769996643,
+     -0.46984633803367615, 0, 0, 0.9396926164627075, 0.3420201539993286, 0, 0.5,
+     -0.29619812965393066, 0.813797652721405, 0, 0, 0, 0, 1]
+  },
+  "parent" => nil,
+  "pickable" => false,
+  "status" => "ready",
+  "transform" => %{
+    "position" => [0, 0, 0],
+    "rotation" => [0.16773125949652062, 0.25488700224417876,
+     0.044943455527547777, 0.9512512425641977],
+    "scale" => [1, 1, 1]
+  },
+  "visible" => true
+}
+dominant ARGB 0xFFC5312E average 0xFFC73330

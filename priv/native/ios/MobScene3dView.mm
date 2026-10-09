@@ -305,10 +305,16 @@ NSString *s3d_json_string(NSString *value) {
 @property(nonatomic, copy) NSString *viewportId;
 @end
 
+Class MobScene3dRendererClass(void) { return [MobScene3dView class]; }
+
 @implementation MobScene3dView
 
 + (Class)layerClass {
   return [CAMetalLayer class];
+}
+
++ (instancetype)viewWithViewportId:(NSString *)viewportId {
+  return [[self alloc] initWithFrame:CGRectZero viewportId:viewportId];
 }
 
 - (instancetype)initWithFrame:(CGRect)frame viewportId:(NSString *)viewportId {

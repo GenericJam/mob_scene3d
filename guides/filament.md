@@ -34,11 +34,13 @@ matching section; this guide is a link map, not a re-explanation.
 ## Version pinning
 
 Filament ships prebuilt binaries (`.aar` for Android, `.xcframework`
-for iOS) — cross-platform parity depends on both sides linking against
-the *same* Filament release. Pin exact versions in both build files
-and record every upgrade in the changelog. See the top of
-`android/build.gradle` and the corresponding iOS build fragments for
-the version currently linked.
+static libraries for iOS) — cross-platform parity depends on both sides
+linking against the *same* Filament release. Both pins live in
+`priv/mob_plugin.exs`: the `android.gradle_deps` versions, and the iOS
+NIF's `prebuilt:` release tarball URL with its `sha256` (mob_dev downloads,
+checks and links it; no host build file names Filament). `priv/filament-version`
+records the same release for the asset pipeline. Bump all three together and
+record every upgrade in the changelog.
 
 ## The scene IR maps to Filament, one-to-one
 
