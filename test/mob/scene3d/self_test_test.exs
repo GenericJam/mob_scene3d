@@ -32,12 +32,12 @@ defmodule Mob.Scene3d.SelfTestTest do
     assert %{"ops" => [["remove_entity", @ghost]]} = Wire.decode!(patch)
   end
 
-  test "a native side that accepts the ghost removal fails: it is not validating" do
+  test "a native side that accepts the ghost removal fails, and the scratch viewport is still destroyed" do
     result = run()
     assert {:fail, reason} = result
     assert reason =~ "accepted removing the unknown entity"
     assert Contract.result?(result)
-    refute Enum.any?(NativeMock.calls(), &match?({:destroy, _}, &1))
+    assert {:destroy, "mob_scene3d_selftest"} in NativeMock.calls()
   end
 
   test "an unregistered Kotlin bridge fails at caps and names the bridge" do

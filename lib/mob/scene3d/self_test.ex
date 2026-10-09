@@ -16,7 +16,9 @@ defmodule Mob.Scene3d.SelfTest do
        registry with `unknown_entity` naming that id. That runs the native
        side's synchronous patch validation (the atomic reject-all every
        real patch goes through) without queueing anything for Filament.
-       `scene3d_destroy/1` then clears the scratch viewport's state.
+       `scene3d_destroy/1` then clears the scratch viewport's state, also
+       when the apply check failed (apply creates the viewport state, and a
+       wrongly accepted patch would leave a queued op behind).
 
   The host stub's `nif_not_loaded` (no native half linked) is a failure.
   Nothing is rendered: proving Filament draws needs an attached viewport,
@@ -33,9 +35,10 @@ defmodule Mob.Scene3d.SelfTest do
   def run(_ctx) do
     native = Native.impl()
 
-    with :ok <- check_caps(native.caps()),
-         :ok <- check_reject(native.apply_patch(@viewport, ghost_patch())) do
-      check_destroy(native.destroy(@viewport))
+    with :ok <- check_caps(native.caps()) do
+      rejected = check_reject(native.apply_patch(@viewport, ghost_patch()))
+      destroyed = check_destroy(native.destroy(@viewport))
+      if rejected == :ok, do: destroyed, else: rejected
     end
   end
 
