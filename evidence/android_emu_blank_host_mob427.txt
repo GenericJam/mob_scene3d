@@ -1,0 +1,6 @@
+MOB-427 Android regression check: blank host (mob_new 0.6.7) + mob_scene3d (MOB-427 branch) + mob_dev (MOB-427 branch), emulator-5554 (sdk_gphone64_arm64)
+mix mob.deploy --native --android: BUILD SUCCESSFUL
+mix mob.selftest: mob_scene3d pass
+Mob.Scene3d.scene(node, "vp"): cube status "ready", material applied base_color+roughness
+Mob.Scene3d.sample_region(node, "vp", {150,190,40,40}): dominant ARGB 0xFFC5312E (red cube), share 0.20
+(adb screencap shows the viewport black: window capture cannot see the Filament surface, see README; GPU readback above is the pixel truth)

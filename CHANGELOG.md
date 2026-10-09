@@ -10,6 +10,31 @@ with this file's section as the body, and publishes to Hex. See
 [mob's RELEASE.md](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 for the canonical process.
 
+## [Unreleased]
+
+### Fixed
+
+- **Activating the plugin is enough to build it on iOS** (MOB-427). A blank
+  `mix mob.new` host with `:mob_scene3d` in `config :mob, :plugins` failed the
+  iOS build with `cannot find type 'MobScene3dView'`: the renderer needed a
+  hand-added ObjC++ step, the Filament static libraries and two bridging-header
+  imports in the host's `ios/build.zig`. The manifest now declares the iOS NIF
+  as `lang: :cpp_archive`: mob_dev compiles `mob_scene3d_nif.m` and
+  `MobScene3dView.mm` into `libmob_scene3d_nif.a` and links Filament 1.75.1's
+  static libraries from its pinned, sha256-checked iOS release tarball
+  (downloaded once into `~/.mob/cache/plugin-prebuilt/`), simulator slices for
+  the simulator and `ios-arm64` for device deploys and `mix mob.release --ios`.
+  The Swift viewport creates `MobScene3dView` by class name, so the host's
+  bridging header no longer imports the plugin's headers, and the NIF refuses
+  to load if the renderer was not linked. The iOS host requirement is gone;
+  hosts that hand-wired the spike's steps should remove them.
+
+### Changed
+
+- Requires mob_dev >= 0.7.20 in the host (cpp_archive `prebuilt:` bundles and
+  `.m` sources), declared as an optional dependency so `mix deps.get` asks for
+  the upgrade instead of the build failing on a missing Filament header.
+
 ## [0.1.4] - 2026-10-09
 
 ### Added

@@ -10,8 +10,9 @@
  * survives mob's iOS navVersion root reset (any push/pop transition rebuilds
  * the SwiftUI tree and recreates the native view).
  *
- * Compiled as plain ObjC (-fobjc-arc) via the plugin objc-NIF path
- * (manifest lang: :objc); Foundation only — no vendored include paths.
+ * Compiled as plain ObjC (-fobjc-arc) by mob_dev's cpp_archive builder, into
+ * libmob_scene3d_nif.a beside the ObjC++ renderer (manifest lang:
+ * :cpp_archive); Foundation only — no Filament include paths here.
  *
  * Wire contract: see Mob.Scene3d.Wire (Elixir) and the Kotlin twin
  * (MobScene3dBridge.kt); the parity harness bead (zn8) checks agreement.
@@ -770,7 +771,9 @@ static int load(ErlNifEnv *env, void **priv_data, ERL_NIF_TERM load_info) {
   (void)env;
   (void)priv_data;
   (void)load_info;
-  return 0;
+  // Keeps the renderer's object file in the link (MobScene3dRuntime.h); a
+  // missing class would leave every viewport blank, so refuse to load.
+  return MobScene3dRendererClass() == Nil ? 1 : 0;
 }
 
 static ErlNifFunc nif_funcs[] = {
