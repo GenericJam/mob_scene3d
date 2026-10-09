@@ -72,10 +72,10 @@ defmodule MobScene3d.MixProject do
     [
       {:mob, "~> 0.9 and >= 0.9.15"},
       # Optional, so it constrains the host's own mob_dev without adding it:
-      # the iOS build needs mob_dev >= 0.7.20 (cpp_archive `prebuilt:` and `.m`
+      # the iOS build needs mob_dev >= 0.7.21 (cpp_archive `prebuilt:` and `.m`
       # sources, MOB-427), and an older one would fail late on a missing
       # Filament header. Also `mix mob.plugin.sign` for the release workflow.
-      {:mob_dev, "~> 0.7.20", runtime: false, optional: true},
+      {:mob_dev, "~> 0.7.21", runtime: false, optional: true},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false},
       # ex_slop — Credo plugin that catches AI-generated Elixir patterns

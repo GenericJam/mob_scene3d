@@ -13,7 +13,7 @@
   # The NIF wire: shadow-registry patch validation + render-thread queues.
   # iOS: the ObjC NIF (Foundation only) and the ObjC++ Filament renderer
   # (MobScene3dView.mm) are cross-compiled by mob_dev into one
-  # libmob_scene3d_nif.a (lang: :cpp_archive, mob_dev >= 0.7.20). Filament's
+  # libmob_scene3d_nif.a (lang: :cpp_archive, mob_dev >= 0.7.21). Filament's
   # headers and static libraries come from its pinned iOS release tarball
   # (`prebuilt:`), which mob_dev downloads once into ~/.mob/cache, checks
   # against the sha256 and links per target: simulator slices for the sim

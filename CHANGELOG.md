@@ -31,7 +31,7 @@ for the canonical process.
 
 ### Changed
 
-- Requires mob_dev >= 0.7.20 in the host (cpp_archive `prebuilt:` bundles and
+- Requires mob_dev >= 0.7.21 in the host (cpp_archive `prebuilt:` bundles and
   `.m` sources), declared as an optional dependency so `mix deps.get` asks for
   the upgrade instead of the build failing on a missing Filament header.
 
