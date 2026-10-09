@@ -10,6 +10,21 @@ with this file's section as the body, and publishes to Hex. See
 [mob's RELEASE.md](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 for the canonical process.
 
+## [Unreleased]
+
+### Added
+
+- **On-device self-test** (MOB-418). `Mob.Scene3d.SelfTest` implements
+  `Mob.Plugin.SelfTest` and is declared in the manifest as `selftest:`.
+  `scene3d_caps/0` must answer this library's wire schema with
+  `remove_entity` and no op outside v1 (on Android that comes through the
+  Kotlin bridge, so an unregistered bridge fails), then `scene3d_apply/2`
+  on a scratch viewport must be rejected by the native shadow registry
+  with `unknown_entity` for a removal of an entity that does not exist,
+  and `scene3d_destroy/1` clears that viewport. No viewport or GPU is
+  needed. Run it with `mix mob.selftest` from a host app (mob_dev 0.7.17).
+  Requires mob 0.9.15; `mob_version` in the manifest is now `~> 0.9`.
+
 ## [0.1.3] - 2026-10-05
 
 Fixes from the Operator v1 release review (MOB-398).

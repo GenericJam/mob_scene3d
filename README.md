@@ -91,6 +91,8 @@ Diffing against the committed scene — not against the last intent — means
 coalesced re-renders never desync from what the native applier actually
 holds.
 
+`mix mob.selftest` runs `Mob.Scene3d.SelfTest` on the device: `scene3d_caps/0` and a patch the native shadow registry must reject, no viewport or GPU needed.
+
 ## Agent-first, from day one
 
 Every rendering feature ships with introspection, or it doesn't ship. The
