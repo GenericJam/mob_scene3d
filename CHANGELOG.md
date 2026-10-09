@@ -10,7 +10,7 @@ with this file's section as the body, and publishes to Hex. See
 [mob's RELEASE.md](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 for the canonical process.
 
-## [Unreleased]
+## [0.2.0] - 2026-10-09
 
 ### Fixed
 
