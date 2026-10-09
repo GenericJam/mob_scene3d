@@ -10,7 +10,7 @@ with this file's section as the body, and publishes to Hex. See
 [mob's RELEASE.md](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 for the canonical process.
 
-## [Unreleased]
+## [0.1.4] - 2026-10-09
 
 ### Added
 
@@ -23,7 +23,12 @@ for the canonical process.
   with `unknown_entity` for a removal of an entity that does not exist,
   and `scene3d_destroy/1` clears that viewport. No viewport or GPU is
   needed. Run it with `mix mob.selftest` from a host app (mob_dev 0.7.17).
-  Requires mob 0.9.15; `mob_version` in the manifest is now `~> 0.9`.
+
+### Changed
+
+- Requires mob >= 0.9.15 (was `~> 0.7`), for `Mob.Plugin.SelfTest`: hosts on
+  mob 0.7.x/0.8.x must upgrade mob before taking this release. `mob_version`
+  in the manifest is now `~> 0.9` (was `~> 0.7`).
 
 ## [0.1.3] - 2026-10-05
 
