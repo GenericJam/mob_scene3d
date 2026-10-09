@@ -1,10 +1,14 @@
 %{
   name: :mob_scene3d,
-  mob_version: "~> 0.7",
+  mob_version: "~> 0.9",
   plugin_spec_version: 1,
   description:
     "Declarative 3D scenes rendered by Filament on both platforms — " <>
       "scene IR in assigns, diffed and patched over a dedicated NIF wire",
+
+  # On-device proof for `mix mob.selftest` / mob_ci: scene3d_caps/0 plus a
+  # patch the native shadow registry must reject (Mob.Plugin.SelfTest).
+  selftest: Mob.Scene3d.SelfTest,
 
   # The NIF wire: shadow-registry patch validation + render-thread queues.
   # iOS: ObjC (Foundation only — the Filament applier itself is the ObjC++
