@@ -109,7 +109,7 @@ const bridge_call_failed = "{\"error\":[\"bridge_call_failed\"]}";
 fn nif_scene3d_caps(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     _ = argv;
-    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    if (g_cls == null or g_caps == null) return literalBinary(env, bridge_unregistered);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
     defer detachIfAttached(attached);
@@ -122,7 +122,7 @@ fn nif_scene3d_caps(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_
 
 /// Shared shape for the two (pid, viewport, arg) -> byte[] bridge calls.
 fn callPidTwoBins(env: ?*erts.ErlNifEnv, method: jni.JMethodID, argv: [*]const erts.ERL_NIF_TERM) erts.ERL_NIF_TERM {
-    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    if (g_cls == null or method == null) return literalBinary(env, bridge_unregistered);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
     defer detachIfAttached(attached);
@@ -170,7 +170,7 @@ fn nif_scene3d_frame_stats(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const er
 fn nif_scene3d_viewports(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     _ = argv;
-    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    if (g_cls == null or g_viewports == null) return literalBinary(env, bridge_unregistered);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
     defer detachIfAttached(attached);
@@ -183,7 +183,7 @@ fn nif_scene3d_viewports(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts
 
 fn nif_scene3d_destroy(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
-    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    if (g_cls == null or g_destroy == null) return literalBinary(env, bridge_unregistered);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
     defer detachIfAttached(attached);
