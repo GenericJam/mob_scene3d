@@ -76,6 +76,19 @@ defmodule Mob.Scene3d.ViewportTest do
     assert {:destroy, "board"} in NativeMock.calls()
   end
 
+  test "a destroy the native side refuses is logged, since nothing reads terminate's return" do
+    socket = mounted(%{id: :board, ir: scene(0.0)})
+    NativeMock.stub(:destroy, {:ok, ~s({"error":["bridge_unregistered"]})})
+
+    log =
+      capture_log(fn ->
+        assert {:error, _reason} = Viewport.terminate(:shutdown, socket)
+      end)
+
+    assert log =~ "destroy"
+    assert log =~ "bridge_unregistered"
+  end
+
   test "a native pick event is re-tagged and forwarded to the owning screen" do
     socket = mounted(%{id: :board, on_pick: :piece_picked, screen_pid: self()})
 

@@ -124,8 +124,16 @@ defmodule Mob.Scene3d.Viewport do
   @impl true
   def terminate(_reason, socket) do
     case socket.assigns do
-      %{viewport_id: viewport_id} -> Mob.Scene3d.destroy(viewport_id)
-      _assigns -> :ok
+      %{viewport_id: viewport_id} ->
+        # Mob.ComponentServer ignores terminate's return, so a failed destroy
+        # (the native viewport state is not reclaimed) is only visible here.
+        with {:error, reason} = error <- Mob.Scene3d.destroy(viewport_id) do
+          Logger.warning("[scene3d] viewport #{viewport_id}: destroy failed: #{inspect(reason)}")
+          error
+        end
+
+      _assigns ->
+        :ok
     end
   end
 

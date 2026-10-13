@@ -24,6 +24,10 @@ for the canonical process.
   `NoSuchMethodError` a failed method-ID lookup leaves pending (it was left
   pending into the next lookup and thrown out of
   `MobScene3dBridge.register()`), so that method ID stays null.
+- **A viewport whose native destroy fails says so.** `Mob.Scene3d.Viewport`'s
+  `terminate/2` logs a warning with the reason when `Mob.Scene3d.destroy/1`
+  returns `{:error, reason}` (nothing reads terminate's return, so the
+  unreclaimed native viewport state went unnoticed). Its return is unchanged.
 
 ## [0.2.0] - 2026-10-09
 
