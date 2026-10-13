@@ -10,6 +10,25 @@ with this file's section as the body, and publishes to Hex. See
 [mob's RELEASE.md](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 for the canonical process.
 
+## [Unreleased]
+
+### Fixed
+- **Android: a call whose bridge method ID failed to resolve no longer
+  aborts the VM** (MOB-424). `scene3d_caps/0`, `scene3d_apply/2`,
+  `scene3d_scene/2`, `scene3d_pick/2`, `scene3d_sample/2`,
+  `scene3d_frame_stats/2`, `scene3d_viewports/0` and `scene3d_destroy/1`
+  checked the cached `MobScene3dBridge` class but not the method ID they call
+  through, so a failed method-ID lookup in `nativeRegister` crashed the app.
+  They now answer `{"error":["bridge_unregistered"]}` like a call before the
+  bridge registers already did. `nativeRegister` now clears the
+  `NoSuchMethodError` a failed method-ID lookup leaves pending (it was left
+  pending into the next lookup and thrown out of
+  `MobScene3dBridge.register()`), so that method ID stays null.
+- **A viewport whose native destroy fails says so.** `Mob.Scene3d.Viewport`'s
+  `terminate/2` logs a warning with the reason when `Mob.Scene3d.destroy/1`
+  returns `{:error, reason}` (nothing reads terminate's return, so the
+  unreclaimed native viewport state went unnoticed). Its return is unchanged.
+
 ## [0.2.0] - 2026-10-09
 
 ### Fixed

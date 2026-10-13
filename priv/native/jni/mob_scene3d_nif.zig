@@ -36,14 +36,25 @@ var g_viewports: jni.JMethodID = null;
 export fn Java_io_mob_scene3d_MobScene3dBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jni.JClass) callconv(.c) void {
     g_cls = jni.newGlobalRef(jenv, cls);
     if (g_cls == null) return;
+    // A failed lookup leaves NoSuchMethodError pending, which would break the
+    // next JNI call and throw out of register(); clear it so the method ID
+    // stays null and its NIF answers bridge_unregistered (MOB-424).
     g_caps = jni.getStaticMethodID(jenv, cls, "scene3dCaps", "()[B");
+    jni.exceptionClear(jenv);
     g_apply = jni.getStaticMethodID(jenv, cls, "scene3dApply", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_scene = jni.getStaticMethodID(jenv, cls, "scene3dScene", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_destroy = jni.getStaticMethodID(jenv, cls, "scene3dDestroy", "([B)[B");
+    jni.exceptionClear(jenv);
     g_pick = jni.getStaticMethodID(jenv, cls, "scene3dPick", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_sample = jni.getStaticMethodID(jenv, cls, "scene3dSample", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_stats = jni.getStaticMethodID(jenv, cls, "scene3dFrameStats", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_viewports = jni.getStaticMethodID(jenv, cls, "scene3dViewports", "()[B");
+    jni.exceptionClear(jenv);
 }
 
 // ── Marshalling helpers ────────────────────────────────────────────────────
@@ -109,7 +120,7 @@ const bridge_call_failed = "{\"error\":[\"bridge_call_failed\"]}";
 fn nif_scene3d_caps(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     _ = argv;
-    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    if (g_cls == null or g_caps == null) return literalBinary(env, bridge_unregistered);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
     defer detachIfAttached(attached);
@@ -122,7 +133,7 @@ fn nif_scene3d_caps(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_
 
 /// Shared shape for the two (pid, viewport, arg) -> byte[] bridge calls.
 fn callPidTwoBins(env: ?*erts.ErlNifEnv, method: jni.JMethodID, argv: [*]const erts.ERL_NIF_TERM) erts.ERL_NIF_TERM {
-    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    if (g_cls == null or method == null) return literalBinary(env, bridge_unregistered);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
     defer detachIfAttached(attached);
@@ -170,7 +181,7 @@ fn nif_scene3d_frame_stats(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const er
 fn nif_scene3d_viewports(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     _ = argv;
-    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    if (g_cls == null or g_viewports == null) return literalBinary(env, bridge_unregistered);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
     defer detachIfAttached(attached);
@@ -183,7 +194,7 @@ fn nif_scene3d_viewports(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts
 
 fn nif_scene3d_destroy(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
-    if (g_cls == null) return literalBinary(env, bridge_unregistered);
+    if (g_cls == null or g_destroy == null) return literalBinary(env, bridge_unregistered);
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return literalBinary(env, bridge_call_failed);
     defer detachIfAttached(attached);
