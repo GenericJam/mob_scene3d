@@ -36,14 +36,25 @@ var g_viewports: jni.JMethodID = null;
 export fn Java_io_mob_scene3d_MobScene3dBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jni.JClass) callconv(.c) void {
     g_cls = jni.newGlobalRef(jenv, cls);
     if (g_cls == null) return;
+    // A failed lookup leaves NoSuchMethodError pending, which would break the
+    // next JNI call and throw out of register(); clear it so the method ID
+    // stays null and its NIF answers bridge_unregistered (MOB-424).
     g_caps = jni.getStaticMethodID(jenv, cls, "scene3dCaps", "()[B");
+    jni.exceptionClear(jenv);
     g_apply = jni.getStaticMethodID(jenv, cls, "scene3dApply", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_scene = jni.getStaticMethodID(jenv, cls, "scene3dScene", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_destroy = jni.getStaticMethodID(jenv, cls, "scene3dDestroy", "([B)[B");
+    jni.exceptionClear(jenv);
     g_pick = jni.getStaticMethodID(jenv, cls, "scene3dPick", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_sample = jni.getStaticMethodID(jenv, cls, "scene3dSample", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_stats = jni.getStaticMethodID(jenv, cls, "scene3dFrameStats", "(J[B[B)[B");
+    jni.exceptionClear(jenv);
     g_viewports = jni.getStaticMethodID(jenv, cls, "scene3dViewports", "()[B");
+    jni.exceptionClear(jenv);
 }
 
 // ── Marshalling helpers ────────────────────────────────────────────────────

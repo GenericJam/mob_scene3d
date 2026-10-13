@@ -20,7 +20,10 @@ for the canonical process.
   checked the cached `MobScene3dBridge` class but not the method ID they call
   through, so a failed method-ID lookup in `nativeRegister` crashed the app.
   They now answer `{"error":["bridge_unregistered"]}` like a call before the
-  bridge registers already did.
+  bridge registers already did. `nativeRegister` now clears the
+  `NoSuchMethodError` a failed method-ID lookup leaves pending (it was left
+  pending into the next lookup and thrown out of
+  `MobScene3dBridge.register()`), so that method ID stays null.
 
 ## [0.2.0] - 2026-10-09
 
